@@ -25,14 +25,29 @@ class PySQLInterpreter(PySQLVisitor):
         elif ctx.ID():
             var_name = ctx.ID().getText()
             return self.memory.get(var_name, None)
-        elif ctx.op:
+        elif ctx.op:  # Arithmetic operations
             left = self.visit(ctx.expr(0))
             right = self.visit(ctx.expr(1))
             if ctx.op.text == '+': return left + right
             if ctx.op.text == '-': return left - right
             if ctx.op.text == '*': return left * right
             if ctx.op.text == '/': return left / right
+        elif ctx.cmp:  # Comparison operations
+            left = self.visit(ctx.expr(0))
+            right = self.visit(ctx.expr(1))
+            if ctx.cmp.text == '>': return left > right
+            if ctx.cmp.text == '<': return left < right
+            if ctx.cmp.text == '>=': return left >= right
+            if ctx.cmp.text == '<=': return left <= right
+            if ctx.cmp.text == '==': return left == right
+            if ctx.cmp.text == '!=': return left != right
+        elif ctx.ID() and ctx.expr():  # Function call
+            func_name = ctx.ID().getText()
+            args = [self.visit(arg) for arg in ctx.expr()]
+            return None  # Usuwamy obsługę print() tutaj
+
         return None
+
     
     def visitPrintStat(self, ctx):
         value = self.visit(ctx.expr())
@@ -71,8 +86,7 @@ def run_interpreter(input_code):
 
 if __name__ == "__main__":
     code = """
-    x = 10;
-    print(x);
-    if (x > 5) then (print("x wieksze"));
+    x = 10
+    print(x)
     """
     run_interpreter(code)

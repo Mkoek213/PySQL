@@ -1,1 +1,13 @@
-.venv/
+.venv/(.venv) mikolaj@mikolaj-ThinkPad-T14s-Gen-2i:~/work/PySQL$ java -jar antlr-4.13.1-complete.jar -Dlanguage=Python3 -visitor PySQL.g4 
+error(50): PySQL.g4:1:0: syntax error: '#' came as a complete surprise to me
+error(50): PySQL.g4:1:12: syntax error: missing SEMI at 'dla'
+error(50): PySQL.g4:1:16: syntax error: missing COLON at 'ANTLR' while matching a rule
+error(50): PySQL.g4:9:32: syntax error: mismatched input 'Statement' expecting SEMI while matching a rule
+error(50): PySQL.g4:10:6: syntax error: mismatched input '|' expecting COLON while matching a lexer rule
+error(50): PySQL.g4:10:24: syntax error: '#' came as a complete surprise to me while matching rule preamble
+error(50): PySQL.g4:11:31: syntax error: mismatched input 'Statement' expecting SEMI while matching a rule
+error(50): PySQL.g4:12:6: syntax error: mismatched input '|' expecting COLON while matching a lexer rule
+error(50): PySQL.g4:12:24: syntax error: '#' came as a complete surprise to me while matching rule preamble
+error(50): PySQL.g4:21:35: syntax error: mismatched input 'Reference' expecting SEMI while matching a rule
+error(50): PySQL.g4:22:6: syntax error: mismatched input '|' expecting COLON while matching a lexer rule
+error(50): PySQL.g4:22:13: syntax error: missing COLON at 'op' while matching a rule

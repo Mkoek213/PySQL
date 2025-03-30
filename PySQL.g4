@@ -1,31 +1,37 @@
-# Gramatyka dla ANTLR
+// Gramatyka dla ANTLR
 
 grammar PySQL;
 
-prog:   stat+ ;
+prog: (stat NEWLINE?)+ ;
+NEWLINE: ('\r'? '\n')+ -> skip ;
 
-stat:   assign          # Assignment
-      | expr            # Expression
-      | printStat       # Print Statement
-      | ifStat          # If Statement
-      | loopStat        # Loop Statement
-      | funcDef         # Function Definition
+
+stat:   assign          // Assignment
+      | expr            // Expression
+      | printStat       // Print Statement
+      | ifStat          // If Statement
+      | loopStat        // Loop Statement
+      | funcDef         // Function Definition
       ;
 
-assign: ID '=' expr ';' ;
+assign: ID '=' expr ;
 
-expr:   INT             # Integer
-      | FLOAT           # Float
-      | STRING          # String
-      | BOOL            # Boolean
-      | ID              # Variable Reference
-      | expr op=('+'|'-'|'*'|'/') expr  # Arithmetic
-      | '(' expr ')'    # Parentheses
-      ;
+expr: INT
+    | FLOAT
+    | STRING
+    | BOOL
+    | ID
+    | expr op=('+'|'-'|'*'|'/') expr
+    | expr cmp=('>' | '<' | '>=' | '<=' | '==' | '!=') expr
+    | '(' expr ')'
+    | ID '(' (expr (',' expr)*)? ')'  // Poprawne wywołanie funkcji
+    ;
 
-printStat: 'print' '(' expr ')' ';' ;
 
-ifStat: 'if' '(' expr ')' 'then' stat ('else' stat)? ;
+PRINT: 'print' ;
+printStat: PRINT '(' expr ')' ;
+
+ifStat: 'if' '(' expr ')' 'then' (stat | printStat) ('else' (stat | printStat))? ;
 
 loopStat: 'for' '(' ID 'in' '[' expr (',' expr)* ']' ')' 'do' stat 
         | 'while' '(' expr ')' 'do' stat ;
@@ -41,4 +47,5 @@ ID: [a-zA-Z_][a-zA-Z_0-9]* ;
 INT: [0-9]+ ;
 FLOAT: [0-9]+'.'[0-9]+ ;
 STRING: '"' .*? '"' ;
-WS: [ \t\r\n]+ -> skip ;
+WS: [ \t]+ -> skip ;
+
