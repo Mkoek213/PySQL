@@ -147,9 +147,93 @@ def run_interpreter(input_code):
         print(f"Error: {e}")
 
 if __name__ == "__main__":
-    code = """
-    x = "text"
-    y = "text
-    print(x)
-    """
-    run_interpreter(code)
+    test_programs = [
+        ("Hello World", '''print("Hello, World")'''),
+        ("Zmienna i print", '''
+x = "Hello"
+print(x)
+        '''),
+        ("Dodawanie", '''
+x = 10
+y = 20
+z = x + y
+print(z)
+        '''),
+        ("Warunek IF", '''
+x = 5
+if (x > 3) then print("Yes") else print("No")
+        '''),
+        ("Pętla FOR", '''
+for (i in [1, 2, 3]) do print(i)
+        '''),
+        ("Niezdefiniowana zmienna", '''
+print(a)  
+        '''),
+        ("Błąd typu", '''
+x = 5
+y = "text"
+z = x + y  
+        '''),
+        ("Dzielenie przez 0", '''
+x = 10
+y = 0
+z = x / y  
+        '''),
+        ("Błędna składnia", '''
+x = 10
+y = 20
+z = x +  
+print(z)
+        '''),
+        ("Niezakończony string", '''
+x = "Hello  
+print(x)
+        '''),
+        ("Niezakończony string 2", '''
+x = "text"
+y = "text
+print(x)
+        ''')
+    ]
+
+additional_tests = [
+("Porównania i bool", '''
+a = 10
+b = 20
+c = a < b
+print(c)
+'''),
+
+("Łączenie stringów", '''
+first = "Hello"
+second = "World"
+print(first + second)
+'''),
+
+("Zagnieżdżony IF", '''
+x = 10
+if (x > 5) then
+    if (x > 8) then print("Big") else print("Small")
+'''),
+("Nieprawidłowe wywołanie funkcji", '''
+foobar(1, 2)
+'''),
+
+("Nieprawidłowa składnia warunku IF", '''
+if x > 5 then print("bad syntax")
+'''),
+
+("Błędny zapis liczby (np. 123abc)", '''
+x = 123abc
+'''),
+
+("Zmienna w pętli bez listy", '''
+for (i in ) do print(i)
+''')
+]
+test_programs.extend(additional_tests)
+for name, code in test_programs:
+        print(f"\n=== Test: {name} ===")
+        run_interpreter(code)
+
+
