@@ -44,8 +44,12 @@ type: 'int' | 'float' | 'string' | 'bool' ;
 
 BOOL: 'true' | 'false' ;
 ID: [a-zA-Z_][a-zA-Z_0-9]* ;
+
+// np. '10text' oddzielało jako osobne tokeny
+INVALID_NUMBER: [0-9]+ [a-zA-Z_]+ {raise Exception("Invalid number format: " + self.text)};
 INT: [0-9]+ ;
 FLOAT: [0-9]+'.'[0-9]+ ;
-STRING: '"' .*? '"' ;
+STRING: '"' ( '\\"' | ~["\n\r] )* '"'; // new string
+// STRING: '"' .*? '"' ;
 WS: [ \t]+ -> skip ;
 
