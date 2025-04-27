@@ -161,7 +161,7 @@ def run_interpreter(input_code):
     except Exception as e:
         print(f"Error: {e}")
 if __name__ == "__main__":
-    test_programs = [
+    test_programs_typy_logiczne = [
         ("Simple true/false", 'print(true)\nprint(false)'),
         ("Logic AND", 'print(true and true)\nprint(true and false)'),
         ("Logic OR", 'print(false or true)\nprint(false or false)'),
@@ -171,8 +171,8 @@ if __name__ == "__main__":
     ]
         
 
-for name, code in test_programs:
-        print(f"\n=== Test: {name} ===")
+for name, code in test_programs_typy_logiczne:
+        print(f"\n=== Test TYPY LOGICZNE: {name} ===")
         run_interpreter(code)
 
 
