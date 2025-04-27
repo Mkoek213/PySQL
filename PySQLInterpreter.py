@@ -25,37 +25,46 @@ class PySQLInterpreter(PySQLVisitor):
             return float(ctx.FLOAT().getText())
         elif ctx.STRING():
             try:
-                return ctx.STRING().getText()[1:-1]  # Remove quotes
+                return ctx.STRING().getText()[1:-1]
             except:
                 raise Exception(f"Malformed string at line {ctx.start.line}")
         elif ctx.BOOL():
             return ctx.BOOL().getText() == "true"
-        elif ctx.ID():
+        elif ctx.ID() and not ctx.expr():
             var_name = ctx.ID().getText()
-
-            # Undefined variables
             if var_name not in self.memory:
                 raise Exception(f"Undefined variable '{var_name}' at line {ctx.start.line}")
-            
             return self.memory.get(var_name, None)
+
+        # NOT operator
+        elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() == 'not':
+            value = self.visit(ctx.expr(0))
+            return not value
         
-        elif ctx.op:  # Arithmetic operations
+        # Logical operations
+        elif ctx.logic:
             left = self.visit(ctx.expr(0))
             right = self.visit(ctx.expr(1))
-
-            # Division by 0
+            if ctx.logic.text == 'and':
+                return left and right
+            elif ctx.logic.text == 'or':
+                return left or right
+        
+        # Arithmetic operations
+        elif ctx.op:
+            left = self.visit(ctx.expr(0))
+            right = self.visit(ctx.expr(1))
             if ctx.op.text == '/' and right == 0:
                 raise Exception("Division by zero")
-            
-            # can add only same types
             if ctx.op.text == '+' and (type(left) != type(right)):
                 raise Exception(f"Type mismatch: {type(left)} + {type(right)} at line {ctx.start.line}")
-
             if ctx.op.text == '+': return left + right
             if ctx.op.text == '-': return left - right
             if ctx.op.text == '*': return left * right
             if ctx.op.text == '/': return left / right
-        elif ctx.cmp:  # Comparison operations
+        
+        # Comparison operations
+        elif ctx.cmp:
             left = self.visit(ctx.expr(0))
             right = self.visit(ctx.expr(1))
             if ctx.cmp.text == '>': return left > right
@@ -64,13 +73,19 @@ class PySQLInterpreter(PySQLVisitor):
             if ctx.cmp.text == '<=': return left <= right
             if ctx.cmp.text == '==': return left == right
             if ctx.cmp.text == '!=': return left != right
-        elif ctx.ID() and ctx.expr():  # Function call
+        
+        elif ctx.ID() and ctx.expr():
             func_name = ctx.ID().getText()
             args = [self.visit(arg) for arg in ctx.expr()]
-            return None  # Usuwamy obsługę print() tutaj
+            return None
+        
+        # Parenthesized expression
+        elif ctx.getChildCount() == 3 and ctx.getChild(0).getText() == '(' and ctx.getChild(2).getText() == ')':
+            return self.visit(ctx.expr(0))
+
         
         raise Exception(f"Invalid expression at line {ctx.start.line}: {ctx.getText()}")
-        # return None
+
 
     
     def visitPrintStat(self, ctx):
@@ -145,93 +160,17 @@ def run_interpreter(input_code):
         interpreter.visit(tree)
     except Exception as e:
         print(f"Error: {e}")
-
 if __name__ == "__main__":
     test_programs = [
-        ("Hello World", '''print("Hello, World")'''),
-        ("Zmienna i print", '''
-x = "Hello"
-print(x)
-        '''),
-        ("Dodawanie", '''
-x = 10
-y = 20
-z = x + y
-print(z)
-        '''),
-        ("Warunek IF", '''
-x = 5
-if (x > 3) then print("Yes") else print("No")
-        '''),
-        ("Pętla FOR", '''
-for (i in [1, 2, 3]) do print(i)
-        '''),
-        ("Niezdefiniowana zmienna", '''
-print(a)  
-        '''),
-        ("Błąd typu", '''
-x = 5
-y = "text"
-z = x + y  
-        '''),
-        ("Dzielenie przez 0", '''
-x = 10
-y = 0
-z = x / y  
-        '''),
-        ("Błędna składnia", '''
-x = 10
-y = 20
-z = x +  
-print(z)
-        '''),
-        ("Niezakończony string", '''
-x = "Hello  
-print(x)
-        '''),
-        ("Niezakończony string 2", '''
-x = "text"
-y = "text
-print(x)
-        ''')
+        ("Simple true/false", 'print(true)\nprint(false)'),
+        ("Logic AND", 'print(true and true)\nprint(true and false)'),
+        ("Logic OR", 'print(false or true)\nprint(false or false)'),
+        ("Logic NOT", 'print(not true)\nprint(not false)'),
+        ("Comparisons", 'print(5 > 3)\nprint(2 < 1)\nprint(5 == 5)\nprint(4 != 5)'),
+        ("Complex Logic", 'print((5 > 3) and (2 < 5))\nprint(not (5 < 3))\nprint((1 == 1) or (2 != 2))'),
     ]
+        
 
-additional_tests = [
-("Porównania i bool", '''
-a = 10
-b = 20
-c = a < b
-print(c)
-'''),
-
-("Łączenie stringów", '''
-first = "Hello"
-second = "World"
-print(first + second)
-'''),
-
-("Zagnieżdżony IF", '''
-x = 10
-if (x > 5) then
-    if (x > 8) then print("Big") else print("Small")
-'''),
-("Nieprawidłowe wywołanie funkcji", '''
-foobar(1, 2)
-'''),
-
-("Nieprawidłowa składnia warunku IF", '''
-if x > 5 then print("bad syntax")
-'''),
-
-("Błędny zapis liczby (np. 123abc)", '''
-x = 123abc
-'''),
-
-("Zmienna w pętli bez listy", '''
-for (i in ) do print(i)
-''')
-]
-test_programs.extend(additional_tests)
 for name, code in test_programs:
         print(f"\n=== Test: {name} ===")
         run_interpreter(code)

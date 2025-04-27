@@ -17,14 +17,17 @@ expr: INT
     | FLOAT
     | STRING
     | BOOL
-    | arrayLiteral                         // <--- nowy literał tablicowy
+    | arrayLiteral
     | ID
+    | 'not' expr                             // <-- dodajemy 'not'
     | expr op=('+'|'-'|'*'|'/') expr
     | expr cmp=('>' | '<' | '>=' | '<=' | '==' | '!=') expr
+    | expr logic=('and' | 'or') expr          // <-- dodajemy 'and', 'or'
     | '(' expr ')'
-    | ID '(' (expr (',' expr)*)? ')'       // wywołanie funkcji
-    | ID '[' expr ']'                      // <--- dostęp do elementu tablicy
+    | ID '(' (expr (',' expr)*)? ')' 
+    | ID '[' expr ']' 
     ;
+
 
 // Nowy literał tablicowy
 arrayLiteral: '[' (expr (',' expr)*)? ']' ;
