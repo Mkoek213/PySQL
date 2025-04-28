@@ -18,76 +18,111 @@ class PySQLInterpreter(PySQLVisitor):
         self.memory[var_name] = value
         return value
     
-    def visitExpr(self, ctx):
+    def visitLogicalExpr(self, ctx):
+        left = self.visit(ctx.comparisonExpr(0))
+        for i in range(1, len(ctx.comparisonExpr())):
+            op = ctx.getChild(2*i-1).getText()
+            right = self.visit(ctx.comparisonExpr(i))
+            if op == 'and':
+                left = left and right
+            elif op == 'or':
+                left = left or right
+        return left
+
+    def visitComparisonExpr(self, ctx):
+        left = self.visit(ctx.addExpr(0))
+        if ctx.addExpr(1):
+            op = ctx.getChild(1).getText()
+            right = self.visit(ctx.addExpr(1))
+            if op == '>': return left > right
+            if op == '<': return left < right
+            if op == '>=': return left >= right
+            if op == '<=': return left <= right
+            if op == '==': return left == right
+            if op == '!=': return left != right
+        return left
+
+    def visitAddExpr(self, ctx):
+        result = self.visit(ctx.mulExpr(0))
+        for i in range(1, len(ctx.mulExpr())):
+            op = ctx.getChild(2*i-1).getText()
+            right = self.visit(ctx.mulExpr(i))
+            result = self.apply_operator(result, op, right, ctx.start.line)
+        return result
+
+    def visitMulExpr(self, ctx):
+        result = self.visit(ctx.factor(0))
+        for i in range(1, len(ctx.factor())):
+            op = ctx.getChild(2*i-1).getText()
+            right = self.visit(ctx.factor(i))
+            result = self.apply_operator(result, op, right, ctx.start.line)
+        return result
+
+    def visitFactor(self, ctx):
+        if ctx.getChildCount() == 2 and ctx.getChild(0).getText() == '-':
+        # Obsługa unarnego minusa
+            value = self.visit(ctx.factor())
+            if isinstance(value, bool):
+                raise Exception(f"Invalid use of unary '-' with boolean value at line {ctx.start.line}")
+            if isinstance(value, (int, float)):
+                return -value
+            else:
+                raise Exception(f"Invalid type for unary '-' operator at line {ctx.start.line}")
+    
         if ctx.INT():
             return int(ctx.INT().getText())
         elif ctx.FLOAT():
             return float(ctx.FLOAT().getText())
         elif ctx.STRING():
-            try:
-                return ctx.STRING().getText()[1:-1]
-            except:
-                raise Exception(f"Malformed string at line {ctx.start.line}")
+            return ctx.STRING().getText()[1:-1]
         elif ctx.BOOL():
-            return ctx.BOOL().getText() == "true"
+            return ctx.BOOL().getText().lower() == 'true'
         elif ctx.ID() and not ctx.expr():
             var_name = ctx.ID().getText()
             if var_name not in self.memory:
                 raise Exception(f"Undefined variable '{var_name}' at line {ctx.start.line}")
-            return self.memory.get(var_name, None)
-
-        # NOT operator
+            return self.memory[var_name]
         elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() == 'not':
-            value = self.visit(ctx.expr(0))
-            return not value
-        
-        # Logical operations
-        elif ctx.logic:
-            left = self.visit(ctx.expr(0))
-            right = self.visit(ctx.expr(1))
-            if ctx.logic.text == 'and':
-                return left and right
-            elif ctx.logic.text == 'or':
-                return left or right
-        
-        # Arithmetic operations
-        elif ctx.op:
-            left = self.visit(ctx.expr(0))
-            right = self.visit(ctx.expr(1))
-            if ctx.op.text == '/' and right == 0:
-                raise Exception("Division by zero")
-            if ctx.op.text == '+' and (type(left) != type(right)):
-                raise Exception(f"Type mismatch: {type(left)} + {type(right)} at line {ctx.start.line}")
-            if ctx.op.text == '+': return left + right
-            if ctx.op.text == '-': return left - right
-            if ctx.op.text == '*': return left * right
-            if ctx.op.text == '/': return left / right
-        
-        # Comparison operations
-        elif ctx.cmp:
-            left = self.visit(ctx.expr(0))
-            right = self.visit(ctx.expr(1))
-            if ctx.cmp.text == '>': return left > right
-            if ctx.cmp.text == '<': return left < right
-            if ctx.cmp.text == '>=': return left >= right
-            if ctx.cmp.text == '<=': return left <= right
-            if ctx.cmp.text == '==': return left == right
-            if ctx.cmp.text == '!=': return left != right
-        
-        elif ctx.ID() and ctx.expr():
-            func_name = ctx.ID().getText()
-            args = [self.visit(arg) for arg in ctx.expr()]
-            return None
-        
-        # Parenthesized expression
-        elif ctx.getChildCount() == 3 and ctx.getChild(0).getText() == '(' and ctx.getChild(2).getText() == ')':
-            return self.visit(ctx.expr(0))
+            return not self.visit(ctx.factor())
+        elif ctx.expr():
+            return self.visit(ctx.expr())
+        elif ctx.selectExpr():
+            return self.visit(ctx.selectExpr())
+        raise Exception(f"Invalid factor at line {ctx.start.line}")
 
-        
-        raise Exception(f"Invalid expression at line {ctx.start.line}: {ctx.getText()}")
+    def apply_operator(self, left, op, right, line):
+        try:
+            if op == '+':
+                # Dopuszczamy tylko: liczba + liczba LUB string + string
+                if isinstance(left, str) and isinstance(right, str):
+                    return left + right
+                elif isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                    return left + right
+                else:
+                    raise TypeError()
 
+            elif op in ('-', '*', '/'):
+                # Wymagamy dwóch liczb i blokujemy boolean
+                self.check_numeric(left, right, line)
+                if op == '-': return left - right
+                if op == '*': return left * right
+                if op == '/':
+                    if right == 0:
+                        raise ZeroDivisionError()
+                    return left / right
 
-    
+        except TypeError:
+            raise Exception(f"Incompatible types for '{op}' at line {line}")
+        except ZeroDivisionError:
+            raise Exception(f"Division by zero at line {line}")
+
+    # Ta metoda powinna być POZA apply_operator
+    def check_numeric(self, left, right, line):
+        if not (isinstance(left, (int, float)) and isinstance(right, (int, float))):
+            raise Exception(f"Invalid types for arithmetic operation at line {line}")
+        if isinstance(left, bool) or isinstance(right, bool):
+            raise Exception(f"Boolean values cannot be used in arithmetic operations at line {line}")
+
     def visitPrintStat(self, ctx):
         value = self.visit(ctx.expr())
         print(value)
@@ -169,10 +204,47 @@ if __name__ == "__main__":
         ("Comparisons", 'print(5 > 3)\nprint(2 < 1)\nprint(5 == 5)\nprint(4 != 5)'),
         ("Complex Logic", 'print((5 > 3) and (2 < 5))\nprint(not (5 < 3))\nprint((1 == 1) or (2 != 2))'),
     ]
+    test_programs_arithemtic = [
+        ("Podstawowe operacje", [
+            'print(2 + 3 * 4)',       # 14
+            'print((2 + 3) * 4)',    # 20
+            'print(10 / 3)',         # 3.333...
+            'print(5.5 + 2.5)',      # 8.0
+            'print(7 - 3.2)'         # 3.8
+        ]),
+        ("Mieszanie typów", [
+            'print(5 + 3.14)',       # 8.14
+            'print(2 * 1.5)',        # 3.0
+            'print(10.0 / 2)'        # 5.0
+        ]),
+        ("Odwracanie liczb", [
+            'x = 10\nprint(-x)',      # -10
+            'print(-5.5)',            # -5.5
+            'print(--10)'             # 10
+        ]),
+        ("Błędy", [
+            'print(true * 5)',
+            'print("text" + 5)',
+            'print(-true)',
+            'print(-"tekst")',
+            'print(10 / 0)',
+            'print(true * 5)',
+            'print("text" + 5)'
+        ])
+    ]
         
 
 for name, code in test_programs_typy_logiczne:
         print(f"\n=== Test TYPY LOGICZNE: {name} ===")
         run_interpreter(code)
+        
+for name, cases in test_programs_arithemtic:
+    print(f"\n=== Test: {name} ===")
+    for code in cases:
+        print(f"\nInput: {code}")
+        try:
+            run_interpreter(code)
+        except Exception as e:
+            print(f"Error: {str(e)}")
 
 
