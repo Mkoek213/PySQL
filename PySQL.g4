@@ -13,21 +13,30 @@ stat:   assign
 
 assign: ID '=' expr ;
 
-expr: INT
+expr: logicalExpr;
+
+logicalExpr: comparisonExpr ( ('and' | 'or') comparisonExpr )* ;
+comparisonExpr: addExpr ( ('>' | '<' | '>=' | '<=' | '==' | '!=' ) addExpr )* ;
+addExpr: mulExpr ( ('+' | '-') mulExpr )* ;
+mulExpr: factor ( ('*' | '/') factor )* ;
+factor:
+    '-' factor
+    | INT
     | FLOAT
     | STRING
     | BOOL
     | arrayLiteral
     | ID
-    | 'not' expr                             // <-- dodajemy 'not'
-    | expr op=('+'|'-'|'*'|'/') expr
-    | expr cmp=('>' | '<' | '>=' | '<=' | '==' | '!=') expr
-    | expr logic=('and' | 'or') expr          // <-- dodajemy 'and', 'or'
+    | 'not' factor
     | '(' expr ')'
-    | ID '(' (expr (',' expr)*)? ')' 
-    | ID '[' expr ']' 
+    | ID '(' exprList? ')'
+    | ID '[' expr ']'
+    | selectExpr
     ;
 
+exprList: expr (',' expr)* ;
+
+selectExpr: SELECT expr FROM expr (WHERE expr)? (ORDER BY (ASC | DESC))? ;
 
 // Nowy literał tablicowy
 arrayLiteral: '[' (expr (',' expr)*)? ']' ;
@@ -52,6 +61,14 @@ type: 'int'
     | 'array' '<' type '>'                // np. array<int>, array<mixed>
     | 'mixed'                             // specjalny typ dla tablic mieszanych
     ;
+    
+SELECT: 'select' | 'SELECT';
+FROM: 'from' | 'FROM';
+WHERE: 'where' | 'WHERE';
+ORDER: 'order' | 'ORDER';
+BY: 'by' | 'BY';
+ASC: 'asc' | 'ASC';
+DESC: 'desc' | 'DESC';
 
 BOOL: 'true' | 'false' ;
 ID: [a-zA-Z_][a-zA-Z_0-9]* ;
