@@ -23,17 +23,31 @@ class PySQLInterpreter(PySQLVisitor):
         for i in range(1, len(ctx.comparisonExpr())):
             op = ctx.getChild(2*i-1).getText()
             right = self.visit(ctx.comparisonExpr(i))
+            
+            # Dodaj walidację: tylko bool and bool
+            if not isinstance(left, bool) or not isinstance(right, bool):
+                raise Exception(f"Logical operator '{op}' requires boolean operands at line {ctx.start.line}")
+            
             if op == 'and':
                 left = left and right
             elif op == 'or':
                 left = left or right
         return left
 
+
     def visitComparisonExpr(self, ctx):
         left = self.visit(ctx.addExpr(0))
         if ctx.addExpr(1):
             op = ctx.getChild(1).getText()
             right = self.visit(ctx.addExpr(1))
+            
+            # Tylko porównywalne typy (int/float) lub ten sam typ
+            if type(left) != type(right):
+                if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                    pass  # OK: float vs int
+                else:
+                    raise Exception(f"Incompatible types for comparison '{op}' at line {ctx.start.line}")
+            
             if op == '>': return left > right
             if op == '<': return left < right
             if op == '>=': return left >= right
@@ -41,6 +55,7 @@ class PySQLInterpreter(PySQLVisitor):
             if op == '==': return left == right
             if op == '!=': return left != right
         return left
+
 
     def visitAddExpr(self, ctx):
         result = self.visit(ctx.mulExpr(0))
@@ -93,6 +108,8 @@ class PySQLInterpreter(PySQLVisitor):
     def apply_operator(self, left, op, right, line):
         try:
             if op == '+':
+                if isinstance(left, bool) or isinstance(right, bool):
+                    raise Exception(f"Boolean values cannot be used in arithmetic operations at line {line}")
                 # Dopuszczamy tylko: liczba + liczba LUB string + string
                 if isinstance(left, str) and isinstance(right, str):
                     return left + right
@@ -201,26 +218,27 @@ if __name__ == "__main__":
         ("Logic AND", 'print(true and true)\nprint(true and false)'),
         ("Logic OR", 'print(false or true)\nprint(false or false)'),
         ("Logic NOT", 'print(not true)\nprint(not false)'),
-        ("Comparisons", 'print(5 > 3)\nprint(2 < 1)\nprint(5 == 5)\nprint(4 != 5)'),
+        ("Comparisons", 'a = 5 > 3\nprint(a)\nprint(2 < 1)\nprint(5 == 5)\nprint(4 != 5)'),
         ("Complex Logic", 'print((5 > 3) and (2 < 5))\nprint(not (5 < 3))\nprint((1 == 1) or (2 != 2))'),
+        ("Logic NOT with number", 'print(not 5)\nprint(not 0)')
     ]
     test_programs_arithemtic = [
         ("Podstawowe operacje", [
-            'print(2 + 3 * 4)',       # 14
-            'print((2 + 3) * 4)',    # 20
-            'print(10 / 3)',         # 3.333...
-            'print(5.5 + 2.5)',      # 8.0
-            'print(7 - 3.2)'         # 3.8
+            'print(2 + -3 * 4)',       
+            'print((2 + 3) * 4)',   
+            'print(10 / 3)',         
+            'print(5.5 + 2.5)',     
+            'print(7 - 3.2)'         
         ]),
         ("Mieszanie typów", [
-            'print(5 + 3.14)',       # 8.14
-            'print(2 * 1.5)',        # 3.0
-            'print(10.0 / 2)'        # 5.0
+            'print(5 + 3.14)',       
+            'print(2 * 1.5)',       
+            'print(10.0 / 2)'       
         ]),
         ("Odwracanie liczb", [
-            'x = 10\nprint(-x)',      # -10
-            'print(-5.5)',            # -5.5
-            'print(--10)'             # 10
+            'x = 10\nprint(-x)',    
+            'print(-5.5)',          
+            'print(--10)'           
         ]),
         ("Błędy", [
             'print(true * 5)',
@@ -229,7 +247,14 @@ if __name__ == "__main__":
             'print(-"tekst")',
             'print(10 / 0)',
             'print(true * 5)',
-            'print("text" + 5)'
+            'print("text" + 5)',
+            'print(true + 5)'
+        ]),
+        ("Błędy logiczne", [
+        'print(5 and true)',         
+        'print("x" or false)',       
+        'print(5 > "text")',         
+        'print(true > false)'
         ])
     ]
         
