@@ -173,7 +173,10 @@ class PySQLInterpreter(PySQLVisitor):
                 if op == '/':
                     if right == 0:
                         raise ZeroDivisionError()
-                    return left / right
+                    if isinstance(left, int) and isinstance(right, int):
+                        return left // right  # <== ZMIANA TUTAJ
+                    else:
+                        return left / right
 
         except TypeError:
             raise Exception(f"Incompatible types for '{op}' at line {line}")
