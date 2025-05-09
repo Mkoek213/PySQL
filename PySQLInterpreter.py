@@ -121,15 +121,16 @@ class PySQLInterpreter(PySQLVisitor):
 
 
     def visitFactor(self, ctx):
-        if ctx.getChildCount() == 2 and ctx.getChild(0).getText() == '-':
-        # Obsługa unarnego minusa
+        if ctx.getChildCount() == 2 and ctx.getChild(0).getText() in ('+', '-'):
+            op = ctx.getChild(0).getText()
             value = self.visit(ctx.factor())
             if isinstance(value, bool):
-                raise Exception(f"Invalid use of unary '-' with boolean value at line {ctx.start.line}")
+                raise Exception(f"Invalid use of unary '{op}' with boolean value at line {ctx.start.line}")
             if isinstance(value, (int, float)):
-                return -value
+                return -value if op == '-' else value  # + is a no-op for numbers
             else:
-                raise Exception(f"Invalid type for unary '-' operator at line {ctx.start.line}")
+                raise Exception(f"Invalid type for unary '{op}' operator at line {ctx.start.line}")
+
     
         if ctx.INT():
             return int(ctx.INT().getText())

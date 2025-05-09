@@ -3,7 +3,8 @@ grammar PySQL;
 prog: (stat NEWLINE?)+ ;
 NEWLINE: ('\r'? '\n')+ -> skip ;
 
-stat:   assign
+stat:   varDecl 
+      | assign
       | expr
       | printStat
       | ifStat
@@ -11,6 +12,7 @@ stat:   assign
       | funcDef
       ;
 
+varDecl: varType ID ('=' expr)? ;
 assign: ID '=' expr ;
 
 expr: logicalExpr;
@@ -20,7 +22,8 @@ comparisonExpr: addExpr ( ('>' | '<' | '>=' | '<=' | '==' | '!=' ) addExpr )* ;
 addExpr: mulExpr ( ('+' | '-') mulExpr )* ;
 mulExpr: factor ( ('*' | '/') factor )* ;
 factor:
-    '-' factor
+    ('+' factor)
+    | ('-' factor)
     | INT
     | FLOAT
     | STRING
@@ -33,6 +36,7 @@ factor:
     | ID '[' expr ']'
     | selectExpr
     ;
+
 
 exprList: expr (',' expr)* ;
 
@@ -49,16 +53,16 @@ ifStat: 'if' '(' expr ')' 'then' (stat | printStat) ('else' (stat | printStat))?
 loopStat: 'for' '(' ID 'in' arrayLiteral ')' 'do' stat 
         | 'while' '(' expr ')' 'do' stat ;
 
-funcDef: 'func' '(' paramList? ')' '->' type 'exec' '(' stat+ ')' ;
+funcDef: 'func' '(' paramList? ')' '->' varType 'exec' '(' stat+ ')' ;
 
-paramList: ID ':' type (',' ID ':' type)* ;
+paramList: ID ':' varType (',' ID ':' varType)* ;
 
 // Dodano typy tablicowe, w tym mieszane
-type: 'int' 
+varType: 'int' 
     | 'float' 
     | 'string' 
     | 'bool' 
-    | 'array' '<' type '>'                // np. array<int>, array<mixed>
+    | 'array' '<' varType '>'                // np. array<int>, array<mixed>
     | 'mixed'                             // specjalny typ dla tablic mieszanych
     ;
     

@@ -1,4 +1,3 @@
-# test_interpreter.py
 from io import StringIO
 from contextlib import redirect_stdout
 from PySQLInterpreter import run_interpreter  # Zmień 'your_module' na nazwę pliku z kodem bez .py
@@ -52,4 +51,36 @@ test_case(
     "Błąd: redeklaracja zmiennej",
     "int x = 5\nint x = 10\nprint(x)",
     "Error: Redeclaration of variable 'x' at line 2, originally declared at line 1"
+)
+
+# -------------------------------
+# 6. Dzielenie intów zwraca int
+test_case(
+    "Dzielenie intów zwraca int",
+    "print(5 / 2)",
+    "2"
+)
+
+# -------------------------------
+# 7. Obsługa unarnego plus
+test_case(
+    "Obsługa unarnego plus (5++3)",
+    "print(5++3)",
+    "8"
+)
+
+# -------------------------------
+# 8. Obsługa unarnego plus przy zmiennych
+test_case(
+    "Obsługa unarnego plus na zmiennej",
+    "int x = +10\nprint(+x)",
+    "10"
+)
+
+# -------------------------------
+# 9. Kombinacja unarnego plus i minus
+test_case(
+    "Kombinacja unarnego plus i minus (5+-3)",
+    "print(5+-3)",
+    "2"
 )
