@@ -7,16 +7,44 @@ from PySQLVisitor import PySQLVisitor
 class PySQLInterpreter(PySQLVisitor):
     def __init__(self):
         self.memory = {}
+        self.var_types = {}  # Nazwa → (typ, linia)
     
     def visitAssign(self, ctx):
         var_name = ctx.ID().getText()
         value = self.visit(ctx.expr())
+        line = ctx.start.line
 
         if value is None:
-            raise Exception(f"Invalid value assigned to '{var_name}' at line {ctx.start.line}")
-        
+            raise Exception(f"Invalid value assigned to '{var_name}' at line {line}")
+
+        value_type = self.infer_type(value)
+
+        if var_name in self.var_types:
+            declared_type, decl_line = self.var_types[var_name]
+            if not self.type_matches(declared_type, value_type):
+                raise Exception(f"Type mismatch on assignment to '{var_name}' at line {line}. Declared as {declared_type} at line {decl_line}, assigned value of type {value_type}")
+        else:
+            # Infer type if not declared yet
+            self.var_types[var_name] = (value_type, line)
+
         self.memory[var_name] = value
         return value
+    
+    def infer_type(self, value):
+        if isinstance(value, bool): return 'bool'
+        if isinstance(value, int): return 'int'
+        if isinstance(value, float): return 'float'
+        if isinstance(value, str): return 'string'
+        return 'unknown'
+
+    def type_matches(self, declared, actual):
+        if declared == actual:
+            return True
+        if declared == 'float' and actual == 'int':
+            return True
+        return False
+
+
     
     def visitLogicalExpr(self, ctx):
         left = self.visit(ctx.comparisonExpr(0))
@@ -72,6 +100,25 @@ class PySQLInterpreter(PySQLVisitor):
             right = self.visit(ctx.factor(i))
             result = self.apply_operator(result, op, right, ctx.start.line)
         return result
+    
+    def visitVarDecl(self, ctx):
+        declared_type = ctx.varType().getText()
+        var_name = ctx.ID().getText()
+        line = ctx.start.line
+
+        if var_name in self.var_types:
+            orig_line = self.var_types[var_name][1]
+            raise Exception(f"Redeclaration of variable '{var_name}' at line {line}, originally declared at line {orig_line}")
+
+        value = self.visit(ctx.expr()) if ctx.expr() else None
+        if value is not None:
+            inferred_type = self.infer_type(value)
+            if not self.type_matches(declared_type, inferred_type):
+                raise Exception(f"Type mismatch in declaration of '{var_name}' at line {line}: expected {declared_type}, got {inferred_type}")
+        self.memory[var_name] = value
+        self.var_types[var_name] = (declared_type, line)
+        return value
+
 
     def visitFactor(self, ctx):
         if ctx.getChildCount() == 2 and ctx.getChild(0).getText() == '-':
@@ -208,9 +255,11 @@ def run_interpreter(input_code):
         interpreter = PySQLInterpreter()
         interpreter.visit(tree)
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error: {e}")    # tree = parser.prog()
+    # interpreter = PySQLInterpreter()
+    # interpreter.visit(tree)
 
-        
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
