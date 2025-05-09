@@ -5,6 +5,10 @@
 
  - W pliku PySQLInterpreter.py znajduje się interpreter, wraz z przykładem użycia.
 
+ - W pliku test1.txt znajduje się przykładowy kod
+
+ - W pliku tests.py znajdują się testy jednostkowe.
+
  - Komenda to kompilacji parsera to:
 ```bash
 java -jar antlr-4.13.1-complete.jar -Dlanguage=Python3 -visitor PySQL.g4
@@ -12,6 +16,6 @@ java -jar antlr-4.13.1-complete.jar -Dlanguage=Python3 -visitor PySQL.g4
 
  - Komenda do uruchomienia testów to:
 ```bash
-python3 PySQLInterpreter.py
+python3 PySQLInterpreter.py test1.txt
 ```
 

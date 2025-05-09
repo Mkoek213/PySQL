@@ -7,16 +7,44 @@ from PySQLVisitor import PySQLVisitor
 class PySQLInterpreter(PySQLVisitor):
     def __init__(self):
         self.memory = {}
+        self.var_types = {}  # Nazwa → (typ, linia)
     
     def visitAssign(self, ctx):
         var_name = ctx.ID().getText()
         value = self.visit(ctx.expr())
+        line = ctx.start.line
 
         if value is None:
-            raise Exception(f"Invalid value assigned to '{var_name}' at line {ctx.start.line}")
-        
+            raise Exception(f"Invalid value assigned to '{var_name}' at line {line}")
+
+        value_type = self.infer_type(value)
+
+        if var_name in self.var_types:
+            declared_type, decl_line = self.var_types[var_name]
+            if not self.type_matches(declared_type, value_type):
+                raise Exception(f"Type mismatch on assignment to '{var_name}' at line {line}. Declared as {declared_type} at line {decl_line}, assigned value of type {value_type}")
+        else:
+            # Infer type if not declared yet
+            self.var_types[var_name] = (value_type, line)
+
         self.memory[var_name] = value
         return value
+    
+    def infer_type(self, value):
+        if isinstance(value, bool): return 'bool'
+        if isinstance(value, int): return 'int'
+        if isinstance(value, float): return 'float'
+        if isinstance(value, str): return 'string'
+        return 'unknown'
+
+    def type_matches(self, declared, actual):
+        if declared == actual:
+            return True
+        if declared == 'float' and actual == 'int':
+            return True
+        return False
+
+
     
     def visitLogicalExpr(self, ctx):
         left = self.visit(ctx.comparisonExpr(0))
@@ -72,17 +100,37 @@ class PySQLInterpreter(PySQLVisitor):
             right = self.visit(ctx.factor(i))
             result = self.apply_operator(result, op, right, ctx.start.line)
         return result
+    
+    def visitVarDecl(self, ctx):
+        declared_type = ctx.varType().getText()
+        var_name = ctx.ID().getText()
+        line = ctx.start.line
+
+        if var_name in self.var_types:
+            orig_line = self.var_types[var_name][1]
+            raise Exception(f"Redeclaration of variable '{var_name}' at line {line}, originally declared at line {orig_line}")
+
+        value = self.visit(ctx.expr()) if ctx.expr() else None
+        if value is not None:
+            inferred_type = self.infer_type(value)
+            if not self.type_matches(declared_type, inferred_type):
+                raise Exception(f"Type mismatch in declaration of '{var_name}' at line {line}: expected {declared_type}, got {inferred_type}")
+        self.memory[var_name] = value
+        self.var_types[var_name] = (declared_type, line)
+        return value
+
 
     def visitFactor(self, ctx):
-        if ctx.getChildCount() == 2 and ctx.getChild(0).getText() == '-':
-        # Obsługa unarnego minusa
+        if ctx.getChildCount() == 2 and ctx.getChild(0).getText() in ('+', '-'):
+            op = ctx.getChild(0).getText()
             value = self.visit(ctx.factor())
             if isinstance(value, bool):
-                raise Exception(f"Invalid use of unary '-' with boolean value at line {ctx.start.line}")
+                raise Exception(f"Invalid use of unary '{op}' with boolean value at line {ctx.start.line}")
             if isinstance(value, (int, float)):
-                return -value
+                return -value if op == '-' else value  # + is a no-op for numbers
             else:
-                raise Exception(f"Invalid type for unary '-' operator at line {ctx.start.line}")
+                raise Exception(f"Invalid type for unary '{op}' operator at line {ctx.start.line}")
+
     
         if ctx.INT():
             return int(ctx.INT().getText())
@@ -126,7 +174,10 @@ class PySQLInterpreter(PySQLVisitor):
                 if op == '/':
                     if right == 0:
                         raise ZeroDivisionError()
-                    return left / right
+                    if isinstance(left, int) and isinstance(right, int):
+                        return left // right  # <== ZMIANA TUTAJ
+                    else:
+                        return left / right
 
         except TypeError:
             raise Exception(f"Incompatible types for '{op}' at line {line}")
@@ -202,74 +253,32 @@ def run_interpreter(input_code):
     parser.removeErrorListeners()
     parser.addErrorListener(PySQLErrorListener())  # Added custom error listener (parser)
 
-    # tree = parser.prog()
-    # interpreter = PySQLInterpreter()
-    # interpreter.visit(tree)
 
     try:
         tree = parser.prog()
         interpreter = PySQLInterpreter()
         interpreter.visit(tree)
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error: {e}")    # tree = parser.prog()
+    # interpreter = PySQLInterpreter()
+    # interpreter.visit(tree)
+
+
 if __name__ == "__main__":
-    test_programs_typy_logiczne = [
-        ("Simple true/false", 'print(true)\nprint(false)'),
-        ("Logic AND", 'print(true and true)\nprint(true and false)'),
-        ("Logic OR", 'print(false or true)\nprint(false or false)'),
-        ("Logic NOT", 'print(not true)\nprint(not false)'),
-        ("Comparisons", 'a = 5 > 3\nprint(a)\nprint(2 < 1)\nprint(5 == 5)\nprint(4 != 5)'),
-        ("Complex Logic", 'print((5 > 3) and (2 < 5))\nprint(not (5 < 3))\nprint((1 == 1) or (2 != 2))'),
-        ("Logic NOT with number", 'print(not 5)\nprint(not 0)')
-    ]
-    test_programs_arithemtic = [
-        ("Podstawowe operacje", [
-            'print(2 + -3 * 4)',       
-            'print((2 + 3) * 4)',   
-            'print(10 / 3)',         
-            'print(5.5 + 2.5)',     
-            'print(7 - 3.2)'         
-        ]),
-        ("Mieszanie typów", [
-            'print(5 + 3.14)',       
-            'print(2 * 1.5)',       
-            'print(10.0 / 2)'       
-        ]),
-        ("Odwracanie liczb", [
-            'x = 10\nprint(-x)',    
-            'print(-5.5)',          
-            'print(--10)'           
-        ]),
-        ("Błędy", [
-            'print(true * 5)',
-            'print("text" + 5)',
-            'print(-true)',
-            'print(-"tekst")',
-            'print(10 / 0)',
-            'print(true * 5)',
-            'print("text" + 5)',
-            'print(true + 5)'
-        ]),
-        ("Błędy logiczne", [
-        'print(5 and true)',         
-        'print("x" or false)',       
-        'print(5 > "text")',         
-        'print(true > false)'
-        ])
-    ]
-        
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python your_script.py <filename>")
+        sys.exit(1)
 
-for name, code in test_programs_typy_logiczne:
-        print(f"\n=== Test TYPY LOGICZNE: {name} ===")
-        run_interpreter(code)
-        
-for name, cases in test_programs_arithemtic:
-    print(f"\n=== Test: {name} ===")
-    for code in cases:
-        print(f"\nInput: {code}")
-        try:
-            run_interpreter(code)
-        except Exception as e:
-            print(f"Error: {str(e)}")
+    filename = sys.argv[1]
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            input_code = f.read()
+        run_interpreter(input_code)
+    except FileNotFoundError:
+        print(f"Error: File '{filename}' not found.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
+    
 
