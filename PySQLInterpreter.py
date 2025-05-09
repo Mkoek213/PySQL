@@ -202,9 +202,6 @@ def run_interpreter(input_code):
     parser.removeErrorListeners()
     parser.addErrorListener(PySQLErrorListener())  # Added custom error listener (parser)
 
-    # tree = parser.prog()
-    # interpreter = PySQLInterpreter()
-    # interpreter.visit(tree)
 
     try:
         tree = parser.prog()
@@ -212,64 +209,23 @@ def run_interpreter(input_code):
         interpreter.visit(tree)
     except Exception as e:
         print(f"Error: {e}")
+
+        
 if __name__ == "__main__":
-    test_programs_typy_logiczne = [
-        ("Simple true/false", 'print(true)\nprint(false)'),
-        ("Logic AND", 'print(true and true)\nprint(true and false)'),
-        ("Logic OR", 'print(false or true)\nprint(false or false)'),
-        ("Logic NOT", 'print(not true)\nprint(not false)'),
-        ("Comparisons", 'a = 5 > 3\nprint(a)\nprint(2 < 1)\nprint(5 == 5)\nprint(4 != 5)'),
-        ("Complex Logic", 'print((5 > 3) and (2 < 5))\nprint(not (5 < 3))\nprint((1 == 1) or (2 != 2))'),
-        ("Logic NOT with number", 'print(not 5)\nprint(not 0)')
-    ]
-    test_programs_arithemtic = [
-        ("Podstawowe operacje", [
-            'print(2 + -3 * 4)',       
-            'print((2 + 3) * 4)',   
-            'print(10 / 3)',         
-            'print(5.5 + 2.5)',     
-            'print(7 - 3.2)'         
-        ]),
-        ("Mieszanie typów", [
-            'print(5 + 3.14)',       
-            'print(2 * 1.5)',       
-            'print(10.0 / 2)'       
-        ]),
-        ("Odwracanie liczb", [
-            'x = 10\nprint(-x)',    
-            'print(-5.5)',          
-            'print(--10)'           
-        ]),
-        ("Błędy", [
-            'print(true * 5)',
-            'print("text" + 5)',
-            'print(-true)',
-            'print(-"tekst")',
-            'print(10 / 0)',
-            'print(true * 5)',
-            'print("text" + 5)',
-            'print(true + 5)'
-        ]),
-        ("Błędy logiczne", [
-        'print(5 and true)',         
-        'print("x" or false)',       
-        'print(5 > "text")',         
-        'print(true > false)'
-        ])
-    ]
-        
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python your_script.py <filename>")
+        sys.exit(1)
 
-for name, code in test_programs_typy_logiczne:
-        print(f"\n=== Test TYPY LOGICZNE: {name} ===")
-        run_interpreter(code)
-        
-for name, cases in test_programs_arithemtic:
-    print(f"\n=== Test: {name} ===")
-    for code in cases:
-        print(f"\nInput: {code}")
-        try:
-            run_interpreter(code)
-        except Exception as e:
-            print(f"Error: {str(e)}")
+    filename = sys.argv[1]
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            input_code = f.read()
+        run_interpreter(input_code)
+    except FileNotFoundError:
+        print(f"Error: File '{filename}' not found.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
+    
 
