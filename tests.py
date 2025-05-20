@@ -84,3 +84,89 @@ test_case(
     "print(5+-3)",
     "2"
 )
+
+# ================== IF-THEN-ELSE TESTS ==================
+
+# Valid if-else with boolean condition
+test_case(
+    "IF: True condition with else",
+    "if (true) then print(\"OK\") else print(\"FAIL\")",
+    "OK"
+)
+
+test_case(
+    "IF: False condition with else",
+    "if (false) then print(\"FAIL\") else print(\"OK\")",
+    "OK"
+)
+
+# If without else
+test_case(
+    "IF: No else branch (should print nothing)",
+    "if (false) then print(\"FAIL\")",
+    ""
+)
+
+# Type error in condition
+test_case(
+    "IF: Non-boolean condition error",
+    "if (5) then print(\"FAIL\")",
+    "Error: Condition must be a boolean, got <class 'int'> at line 1"
+)
+
+# ================== FUNCTION TESTS ==================
+
+# 1. Simple valid function
+test_case(
+    "FUNC: Simple valid function",
+    """func add(a:int,b:int) -> int exec (
+    return a + b
+)
+int x = add(2,3)
+print(x)""",
+    "5"
+)
+
+# 2. Void function (no return, default None prints as 'None')
+test_case(
+    "FUNC: Void function",
+    """func greet(a:string) -> void exec (
+    print(a)
+)
+greet("Alice")""",
+    "Alice"
+)
+
+# 3. Return–type mismatch
+test_case(
+    "FUNC: Return type mismatch",
+    """func floatFunc() -> int exec (
+    return 2.5
+)
+print(floatFunc())""",
+    "Error: Function 'floatFunc' should return int, got float at line 4"
+)
+
+# 4. Wrong argument count
+test_case(
+    "FUNC: Arg count mismatch",
+    """func foo(a:int) -> int exec (
+    return a * 2
+)
+print(foo(1,2))""",
+    "Error: Function 'foo' expects 1 args, got 2 at line 4"
+)
+
+# 5. Recursive function (factorial)
+test_case(
+    "FUNC: Recursive factorial",
+    """func fact(n:int) -> int exec (
+    if (n == 0) then
+        return 1
+    else
+        return n * fact(n - 1)
+)
+print(fact(5))""",
+    "120"
+)
+
