@@ -4,11 +4,38 @@ from PySQLLexer import PySQLLexer
 from PySQLParser import PySQLParser
 from PySQLVisitor import PySQLVisitor
 
+# Exception to unwind stack on return
+class ReturnException(Exception):
+    def __init__(self, value):
+        self.value = value
+
 class PySQLInterpreter(PySQLVisitor):
     def __init__(self):
         self.memory = {}
         self.var_types = {}  # Nazwa → (typ, linia)
+        self.functions = {}  # name -> (params, return_type, body_ctx)
     
+    # Function definition: store signature and body
+    def visitFuncDef(self, ctx):
+        name = ctx.ID().getText()
+        if name in self.functions:
+            raise Exception(f"Function '{name}' already defined at line {ctx.start.line}")
+        # parameters: list of (name, type)
+        params = []
+        if ctx.paramList():
+            ids = ctx.paramList().ID()
+            types = ctx.paramList().varType()
+            for pname_ctx, ptype_ctx in zip(ids, types):
+                params.append((pname_ctx.getText(), ptype_ctx.getText()))
+        ret_type = ctx.returnType().getText()
+        body = ctx.stat()
+        self.functions[name] = (params, ret_type, body)
+        return None
+
+    # Return statement: throw exception
+    def visitReturnStat(self, ctx):
+        val = self.visit(ctx.expr()) if ctx.expr() else None
+        raise ReturnException(val)
     def visitAssign(self, ctx):
         var_name = ctx.ID().getText()
         value = self.visit(ctx.expr())
@@ -130,7 +157,46 @@ class PySQLInterpreter(PySQLVisitor):
                 return -value if op == '-' else value  # + is a no-op for numbers
             else:
                 raise Exception(f"Invalid type for unary '{op}' operator at line {ctx.start.line}")
-
+            
+        if ctx.getChildCount() >= 2 and ctx.ID() and ctx.getChild(1).getText() == '(' and ctx.getChild(ctx.getChildCount() - 1).getText() == ')':
+            fname = ctx.ID().getText()
+            args = []
+            if ctx.exprList():
+                for e in ctx.exprList().expr():
+                    args.append(self.visit(e))
+            if fname not in self.functions:
+                raise Exception(f"Undefined function '{fname}' at line {ctx.start.line}")
+            params, ret_type, body = self.functions[fname]
+            if len(args) != len(params):
+                raise Exception(f"Function '{fname}' expects {len(params)} args, got {len(args)} at line {ctx.start.line}")
+            # Type check args and setup frame
+            saved_memory = self.memory.copy()
+            saved_types = self.var_types.copy()
+            for (pname, ptype), val in zip(params, args):
+                actual_type = self.infer_type(val)
+                if not self.type_matches(ptype, actual_type):
+                    raise Exception(f"Incorrect type for parameter '{pname}' in call to '{fname}' at line {ctx.start.line}")
+                self.memory[pname] = val
+                self.var_types[pname] = (ptype, ctx.start.line)
+            # Execute function body
+            try:
+                for stmt in body:
+                    self.visit(stmt)
+            except ReturnException as r:
+                result = r.value
+                # Check return type unless void
+                if ret_type != 'void':
+                    actual = self.infer_type(result)
+                    if not self.type_matches(ret_type, actual):
+                        raise Exception(f"Function '{fname}' should return {ret_type}, got {actual} at line {ctx.start.line}")
+                self.memory = saved_memory
+                self.var_types = saved_types
+                return result
+            # No return found
+            self.memory = saved_memory
+            self.var_types = saved_types
+            return None
+        
     
         if ctx.INT():
             return int(ctx.INT().getText())
@@ -140,7 +206,8 @@ class PySQLInterpreter(PySQLVisitor):
             return ctx.STRING().getText()[1:-1]
         elif ctx.BOOL():
             return ctx.BOOL().getText().lower() == 'true'
-        elif ctx.ID() and not ctx.expr():
+        # elif ctx.ID() and not ctx.expr():
+        elif ctx.ID() and ctx.getChildCount() == 1:
             var_name = ctx.ID().getText()
             if var_name not in self.memory:
                 raise Exception(f"Undefined variable '{var_name}' at line {ctx.start.line}")
@@ -151,6 +218,7 @@ class PySQLInterpreter(PySQLVisitor):
             return self.visit(ctx.expr())
         elif ctx.selectExpr():
             return self.visit(ctx.selectExpr())
+        
         raise Exception(f"Invalid factor at line {ctx.start.line}")
 
     def apply_operator(self, left, op, right, line):
@@ -184,7 +252,6 @@ class PySQLInterpreter(PySQLVisitor):
         except ZeroDivisionError:
             raise Exception(f"Division by zero at line {line}")
 
-    # Ta metoda powinna być POZA apply_operator
     def check_numeric(self, left, right, line):
         if not (isinstance(left, (int, float)) and isinstance(right, (int, float))):
             raise Exception(f"Invalid types for arithmetic operation at line {line}")
@@ -198,6 +265,10 @@ class PySQLInterpreter(PySQLVisitor):
 
     def visitIfStat(self, ctx):
         condition = self.visit(ctx.expr())
+        # Check if the condition is a boolean
+        if not isinstance(condition, bool):
+            line = ctx.expr().start.line
+            raise Exception(f"Condition must be a boolean, got {type(condition)} at line {line}")
         if condition:
             return self.visit(ctx.stat(0))
         elif ctx.stat(1):
@@ -215,8 +286,7 @@ class PySQLInterpreter(PySQLVisitor):
             while self.visit(ctx.expr()):
                 self.visit(ctx.stat())
         return None
-    
-
+        
 # Error Handling
 class PySQLErrorListener(ErrorListener):
     def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e):
