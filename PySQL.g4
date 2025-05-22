@@ -11,6 +11,8 @@ stat:   varDecl
       | loopStat
       | funcDef
       | returnStat // new
+      | breakStat
+      | continueStat
       ;
 
 varDecl: varType ID ('=' expr)? ;
@@ -51,8 +53,18 @@ printStat: PRINT '(' expr ')' ;
 
 ifStat: 'if' '(' expr ')' 'then' (stat | printStat) ('else' (stat | printStat))? ;
 
-loopStat: 'for' '(' ID 'in' arrayLiteral ')' 'do' stat
-        | 'while' '(' expr ')' 'do' stat ;
+loopStat
+    : 'for' '(' assign ';' expr ';' assign ')' 'do' block
+    | 'while' '(' expr ')' 'do' block
+    ;
+
+block: '{' stat* '}' ;
+
+breakStat: 'break' ;
+continueStat: 'continue' ;
+
+
+
 
 funcDef: 'func' ID '(' paramList? ')' '->' returnType 'exec' '(' stat+ ')' ;
 returnStat: 'return' expr? ;
@@ -76,6 +88,9 @@ ORDER: 'order' | 'ORDER';
 BY: 'by' | 'BY';
 ASC: 'asc' | 'ASC';
 DESC: 'desc' | 'DESC';
+BREAK: 'break' ;
+CONTINUE: 'continue' ;
+
 
 BOOL: 'true' | 'false' ;
 ID: [a-zA-Z_][a-zA-Z_0-9]* ;

@@ -170,3 +170,98 @@ print(fact(5))""",
     "120"
 )
 
+# ================== LOOP TESTS ==================
+# 1. Pętla while — prosta iteracja
+test_case(
+    "LOOP: while loop prints 0 to 2",
+    """
+    int i = 0
+    while (i < 3) do {
+        print(i)
+        i = i + 1
+    }
+    """,
+    "0\n1\n2"
+)
+
+# 2. Pętla for — klasyczna postać
+test_case(
+    "LOOP: for loop prints 0 to 2",
+    """
+    for (i = 0; i < 3; i = i + 1) do {
+        print(i)
+    }
+    """,
+    "0\n1\n2"
+)
+
+# 3. Pętla for — użycie continue
+test_case(
+    "LOOP: for loop with continue (skips 2)",
+    """
+    for (i = 0; i < 5; i = i + 1) do {
+        if (i == 2) then continue
+        print(i)
+    }
+    """,
+    "0\n1\n3\n4"
+)
+
+# 4. Pętla for — użycie break
+test_case(
+    "LOOP: for loop with break (stops at 3)",
+    """
+    for (i = 0; i < 5; i = i + 1) do {
+        if (i == 3) then break 
+        print(i)    
+    }
+    """,
+    "0\n1\n2"
+)
+
+# 5. Pętla while — z continue i break
+test_case(
+    "LOOP: while loop with continue and break",
+    """
+    int j = 0
+    while (j < 5) do {
+        j = j + 1
+        if (j == 2) then continue
+        if (j == 4) then break
+        print(j)
+    }
+    """,
+    "1\n3"
+)
+
+# ================== BOOLEAN COMPARISON TESTS ==================
+
+# 1. Porównanie true == true
+test_case(
+    "BOOL: true == true",
+    "print(true == true)",
+    "True"
+)
+
+# 2. Porównanie true != false
+test_case(
+    "BOOL: true != false",
+    "print(true != false)",
+    "True"
+)
+
+# 3. Porównanie false == true
+test_case(
+    "BOOL: false == true",
+    "print(false == true)",
+    "False"
+)
+
+# 4. Porównanie true != true
+test_case(
+    "BOOL: true != true",
+    "print(true != true)",
+    "False"
+)
+
+

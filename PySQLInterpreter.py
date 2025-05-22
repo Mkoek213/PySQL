@@ -96,12 +96,17 @@ class PySQLInterpreter(PySQLVisitor):
             op = ctx.getChild(1).getText()
             right = self.visit(ctx.addExpr(1))
             
-            # Tylko porównywalne typy (int/float) lub ten sam typ
-            if type(left) != type(right):
-                if isinstance(left, (int, float)) and isinstance(right, (int, float)):
-                    pass  # OK: float vs int
-                else:
-                    raise Exception(f"Incompatible types for comparison '{op}' at line {ctx.start.line}")
+            if op in ['==', '!=']:
+                # Tylko porównywalne typy (int/float) lub ten sam typ
+                if type(left) != type(right):
+                    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                        pass  # OK: float vs int
+                    else:
+                        raise Exception(f"Incompatible types for comparison '{op}' at line {ctx.start.line}")
+            else:
+                # Other operators require numeric types
+                if not (isinstance(left, (int, float)) and isinstance(right, (int, float))):
+                    raise Exception(f"Operator '{op}' requires numeric operands at line {ctx.start.line}")
             
             if op == '>': return left > right
             if op == '<': return left < right
@@ -110,7 +115,6 @@ class PySQLInterpreter(PySQLVisitor):
             if op == '==': return left == right
             if op == '!=': return left != right
         return left
-
 
     def visitAddExpr(self, ctx):
         result = self.visit(ctx.mulExpr(0))
@@ -275,17 +279,50 @@ class PySQLInterpreter(PySQLVisitor):
             return self.visit(ctx.stat(1))
         return None
 
+    def visitBreakStat(self, ctx):
+        raise BreakException()
+
+    def visitContinueStat(self, ctx):
+        raise ContinueException()
+
+
     def visitLoopStat(self, ctx):
-        if ctx.getChild(0).getText() == "for":
-            var_name = ctx.ID().getText()
-            values = [self.visit(e) for e in ctx.expr()]
-            for val in values:
-                self.memory[var_name] = val
-                self.visit(ctx.stat())
-        elif ctx.getChild(0).getText() == "while":
-            while self.visit(ctx.expr()):
-                self.visit(ctx.stat())
-        return None
+        if ctx.getChild(0).getText() == 'while':
+            while True:
+                condition = self.visit(ctx.expr())
+                if not isinstance(condition, bool):
+                    raise Exception(f"'while' condition must be boolean at line {ctx.start.line}")
+                if not condition:
+                    break
+                try:
+                    self.visit(ctx.block())
+                except BreakException:
+                    break
+                except ContinueException:
+                    continue
+
+        elif ctx.getChild(0).getText() == 'for':
+            init = ctx.assign(0)
+            cond = ctx.expr()
+            incr = ctx.assign(1)
+            self.visit(init)
+            while self.visit(cond):
+                try:
+                    self.visit(ctx.block())
+                except BreakException:
+                    break
+                except ContinueException:
+                    pass  
+                self.visit(incr)
+    
+    def visitBlock(self, ctx):
+        for stmt in ctx.stat():
+            self.visit(stmt)
+
+    
+class BreakException(Exception): pass
+class ContinueException(Exception): pass
+
         
 # Error Handling
 class PySQLErrorListener(ErrorListener):
