@@ -102,4 +102,6 @@ INVALID_NUMBER: [0-9]+ [a-zA-Z_]+ {raise Exception("Invalid number format: " + s
 INT: [0-9]+ ;
 FLOAT: [0-9]+'.'[0-9]+ ;
 STRING: '"' ( '\\"' | ~["\n\r] )* '"' ;
+LINE_COMMENT: '//' ~[\r\n]* -> skip; // Matches '//' followed by any characters except newline
+BLOCK_COMMENT: '/\\' .*? '/\\' -> skip; // Matches '/\*' then any char (non-greedy) until '\*/'
 WS: [ \t]+ -> skip ;
