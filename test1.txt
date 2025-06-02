@@ -2,4 +2,11 @@ import "utils.txt"
 
 print("Main started")
 print(add(2, 3))
+// komentarz pojedynczy
+int z = 6
+/\  komentarz wieloliniowy
+   z = z + 4
+/\
+z = (float)z
+print(z)
 print(x)

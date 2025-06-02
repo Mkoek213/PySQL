@@ -26,7 +26,8 @@ comparisonExpr: addExpr ( ('>' | '<' | '>=' | '<=' | '==' | '!=' ) addExpr )* ;
 addExpr: mulExpr ( ('+' | '-') mulExpr )* ;
 mulExpr: factor ( ('*' | '/') factor )* ;
 factor:
-    ('+' factor)
+    '(' varType ')' factor
+    | ('+' factor)
     | ('-' factor)
     | INT
     | FLOAT

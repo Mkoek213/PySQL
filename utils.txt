@@ -2,6 +2,6 @@ func add(a: int, b: int) -> int exec (
     return a + b
 )
 
-int x = 5
+float x = 5
 
 x = x + 7

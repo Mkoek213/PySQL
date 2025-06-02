@@ -67,17 +67,23 @@ class PySQLInterpreter(PySQLVisitor):
         value = self.visit(ctx.expr())
         line = ctx.start.line
 
-        if value is None:
+        if value is None: # Should not happen if expr always yields a value
             raise Exception(f"Invalid value assigned to '{var_name}' at line {line}")
 
         value_type = self.infer_type(value)
 
         if var_name in self.var_types:
             declared_type, decl_line = self.var_types[var_name]
+
+            # Implicit promotion from int to float
+            if declared_type == 'float' and value_type == 'int':
+                value = float(value)
+                value_type = 'float' # Update value_type after promotion
+
             if not self.type_matches(declared_type, value_type):
                 raise Exception(f"Type mismatch on assignment to '{var_name}' at line {line}. Declared as {declared_type} at line {decl_line}, assigned value of type {value_type}")
         else:
-            # Infer type if not declared yet
+            # Variable not declared, infer its type from this first assignment
             self.var_types[var_name] = (value_type, line)
 
         self.memory[var_name] = value
@@ -157,7 +163,7 @@ class PySQLInterpreter(PySQLVisitor):
             right = self.visit(ctx.factor(i))
             result = self.apply_operator(result, op, right, ctx.start.line)
         return result
-    
+        
     def visitVarDecl(self, ctx):
         declared_type = ctx.varType().getText()
         var_name = ctx.ID().getText()
@@ -170,62 +176,144 @@ class PySQLInterpreter(PySQLVisitor):
         value = self.visit(ctx.expr()) if ctx.expr() else None
         if value is not None:
             inferred_type = self.infer_type(value)
-            if not self.type_matches(declared_type, inferred_type):
+
+            # Implicit promotion from int to float
+            if declared_type == 'float' and inferred_type == 'int':
+                value = float(value)
+                inferred_type = 'float' # Update inferred_type after promotion
+
+            if not self.type_matches(declared_type, inferred_type): # type_matches already allows int for float
                 raise Exception(f"Type mismatch in declaration of '{var_name}' at line {line}: expected {declared_type}, got {inferred_type}")
+
         self.memory[var_name] = value
         self.var_types[var_name] = (declared_type, line)
         return value
 
 
-    def visitFactor(self, ctx):
-        if ctx.getChildCount() == 2 and ctx.getChild(0).getText() in ('+', '-'):
-            op = ctx.getChild(0).getText()
-            value = self.visit(ctx.factor())
-            if isinstance(value, bool):
-                raise Exception(f"Invalid use of unary '{op}' with boolean value at line {ctx.start.line}")
-            if isinstance(value, (int, float)):
-                return -value if op == '-' else value  # + is a no-op for numbers
-            else:
-                raise Exception(f"Invalid type for unary '{op}' operator at line {ctx.start.line}")
+    def visitFactor(self, ctx: PySQLParser.FactorContext):
+        if ctx.getChildCount() == 4 and \
+           ctx.getChild(0).getText() == '(' and \
+           isinstance(ctx.getChild(1), PySQLParser.VarTypeContext) and \
+           ctx.getChild(2).getText() == ')':
+            target_type_str = ctx.varType().getText()
+            value_to_cast = self.visit(ctx.factor()) 
+
+            if target_type_str == 'int':
+                if isinstance(value_to_cast, float): return int(value_to_cast)
+                if isinstance(value_to_cast, bool): return 1 if value_to_cast else 0
+                if isinstance(value_to_cast, int): return value_to_cast
+                raise Exception(f"Cannot cast type {self.infer_type(value_to_cast)} to 'int' at line {ctx.start.line}")
             
-        if ctx.getChildCount() >= 2 and ctx.ID() and ctx.getChild(1).getText() == '(' and ctx.getChild(ctx.getChildCount() - 1).getText() == ')':
+            elif target_type_str == 'float':
+                if isinstance(value_to_cast, int): return float(value_to_cast)
+                if isinstance(value_to_cast, bool): return 1.0 if value_to_cast else 0.0
+                if isinstance(value_to_cast, float): return value_to_cast
+                raise Exception(f"Cannot cast type {self.infer_type(value_to_cast)} to 'float' at line {ctx.start.line}")
+
+            elif target_type_str == 'bool':
+                if isinstance(value_to_cast, int): return value_to_cast != 0
+                if isinstance(value_to_cast, float): return value_to_cast != 0.0
+                if isinstance(value_to_cast, bool): return value_to_cast
+                raise Exception(f"Cannot cast type {self.infer_type(value_to_cast)} to 'bool' at line {ctx.start.line}")
+            
+            else:
+                raise Exception(f"Unsupported cast to type '{target_type_str}' at line {ctx.start.line}")
+
+        elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() in ('+', '-') and isinstance(ctx.factor(0), PySQLParser.FactorContext):
+            op = ctx.getChild(0).getText()
+            value = self.visit(ctx.factor(0))
+            if isinstance(value, bool):
+                raise Exception(f"Unary '{op}' cannot be applied to boolean values at line {ctx.start.line}")
+            if isinstance(value, (int, float)):
+                return -value if op == '-' else value
+            else:
+                raise Exception(f"Invalid type for unary '{op}' operator at line {ctx.start.line}. Expected number, got {self.infer_type(value)}.")
+        
+        elif ctx.INT(): return int(ctx.INT().getText())
+        elif ctx.FLOAT(): return float(ctx.FLOAT().getText())
+        elif ctx.STRING(): return ctx.STRING().getText()[1:-1]
+        elif ctx.BOOL(): return ctx.BOOL().getText().lower() == 'true'
+
+        elif ctx.ID() and ctx.getChild(1) and ctx.getChild(1).getText() == '(':
             fname = ctx.ID().getText()
             args = []
             if ctx.exprList():
-                for e in ctx.exprList().expr():
-                    args.append(self.visit(e))
+                for e_ctx in ctx.exprList().expr():
+                    args.append(self.visit(e_ctx))
+            
             if fname not in self.functions:
                 raise Exception(f"Undefined function '{fname}' at line {ctx.start.line}")
-            params, ret_type, body = self.functions[fname]
+            
+            params, ret_type, body_stmts = self.functions[fname]
+
             if len(args) != len(params):
                 raise Exception(f"Function '{fname}' expects {len(params)} args, got {len(args)} at line {ctx.start.line}")
-            # Type check args and setup frame
+
             saved_memory = self.memory.copy()
             saved_types = self.var_types.copy()
-            for (pname, ptype), val in zip(params, args):
+            current_call_line = ctx.start.line
+
+            for i, ((pname, ptype), val) in enumerate(zip(params, args)):
                 actual_type = self.infer_type(val)
+                arg_line = ctx.exprList().expr(i).start.line if ctx.exprList() and ctx.exprList().expr(i) else current_call_line
+
+                if ptype == 'float' and actual_type == 'int':
+                    val = float(val)
+                    actual_type = 'float'
+
                 if not self.type_matches(ptype, actual_type):
-                    raise Exception(f"Incorrect type for parameter '{pname}' in call to '{fname}' at line {ctx.start.line}")
+                     raise Exception(f"Incorrect type for parameter '{pname}' (index {i}) in call to '{fname}' at line {arg_line}. Expected {ptype}, got {actual_type}")
                 self.memory[pname] = val
-                self.var_types[pname] = (ptype, ctx.start.line)
-            # Execute function body
+                self.var_types[pname] = (ptype, arg_line)
+            
             try:
-                for stmt in body:
-                    self.visit(stmt)
+                for stmt_ctx in body_stmts:
+                    self.visit(stmt_ctx)
             except ReturnException as r:
                 result = r.value
-                # Check return type unless void
                 if ret_type != 'void':
-                    actual = self.infer_type(result)
-                    if not self.type_matches(ret_type, actual):
-                        raise Exception(f"Function '{fname}' should return {ret_type}, got {actual} at line {ctx.start.line}")
+                    actual_ret_type = self.infer_type(result)
+                    if ret_type == 'float' and actual_ret_type == 'int':
+                        result = float(result)
+                        actual_ret_type = 'float'
+                    if not self.type_matches(ret_type, actual_ret_type):
+                        raise Exception(f"Function '{fname}' should return {ret_type}, got {actual_ret_type}. Called at line {current_call_line}")
                 self.memory = saved_memory
                 self.var_types = saved_types
                 return result
-            # No return found
+            
             self.memory = saved_memory
             self.var_types = saved_types
+            if ret_type != 'void':
+                 raise Exception(f"Function '{fname}' defined with return type '{ret_type}' did not return a value. Called at line {current_call_line}")
             return None
+
+        elif ctx.ID():
+            var_name = ctx.ID().getText()
+            if var_name not in self.memory:
+                raise Exception(f"Undefined variable '{var_name}' at line {ctx.start.line}")
+            return self.memory[var_name]
+
+        elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() == 'not':
+            val_to_negate = self.visit(ctx.factor(0))
+            if not isinstance(val_to_negate, bool):
+                raise Exception(f"'not' operator requires a boolean operand, got {self.infer_type(val_to_negate)} at line {ctx.start.line}")
+            return not val_to_negate
+
+        elif ctx.expr() and ctx.getChildCount() == 3 and \
+             ctx.getChild(0).getText() == '(' and \
+             isinstance(ctx.expr(0), PySQLParser.ExprContext) and \
+             ctx.getChild(2).getText() == ')':
+            return self.visit(ctx.expr(0))
+        
+        elif ctx.arrayLiteral():
+            raise NotImplementedError(f"Array literal handling not fully implemented in visitFactor at line {ctx.start.line}")
+
+        elif ctx.selectExpr():
+            return self.visit(ctx.selectExpr(0))
+
+        else:
+            raise Exception(f"Invalid or unhandled factor structure near '{ctx.getText()}' at line {ctx.start.line}")
         
     
         if ctx.INT():
