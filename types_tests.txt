@@ -1,0 +1,43 @@
+print("TEST") // kom
+
+float a = 1
+print(a)
+
+int b = (int)2.7
+print(b)
+
+int cc = 3
+float c = (float)cc
+print(c)
+
+int d = (int)true
+print(d)
+int e = (int)false
+print(e)
+
+bool f = (bool)5
+print(f)
+bool g = (bool)0
+print(g)
+
+float h = (float)true
+print(h)
+float i = (float)false
+print(i)
+
+// Test with functions
+func get_float() -> float exec (
+    return 10 // returns int, should be promoted to 10.0
+)
+print(get_float())
+
+func takes_float(param: float) -> void exec (
+    print(param)
+)
+takes_float(20) // passes int, param should be 20.0
+takes_float((float)21) // passes float
+takes_float(22.5) // passes float
+
+// Error case (example)
+int err = (int)"hello"; // Should raise an error if string-to-int cast is not supported
+

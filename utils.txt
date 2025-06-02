@@ -1,0 +1,8 @@
+func add(a: int, b: int) -> int exec (
+    return a + b
+)
+float x = 5
+
+x = x + 7
+
+int y = 9999

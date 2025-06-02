@@ -13,6 +13,7 @@ stat:   varDecl
       | returnStat // new
       | breakStat
       | continueStat
+      | importStat 
       ;
 
 varDecl: varType ID ('=' expr)? ;
@@ -25,7 +26,8 @@ comparisonExpr: addExpr ( ('>' | '<' | '>=' | '<=' | '==' | '!=' ) addExpr )* ;
 addExpr: mulExpr ( ('+' | '-') mulExpr )* ;
 mulExpr: factor ( ('*' | '/') factor )* ;
 factor:
-    ('+' factor)
+    '(' varType ')' factor
+    | ('+' factor)
     | ('-' factor)
     | INT
     | FLOAT
@@ -48,6 +50,7 @@ selectExpr: SELECT expr FROM expr (WHERE expr)? (ORDER BY (ASC | DESC))? ;
 // Nowy literał tablicowy
 arrayLiteral: '[' (expr (',' expr)*)? ']' ;
 
+IMPORT: 'import';
 PRINT: 'print' ;
 printStat: PRINT '(' expr ')' ;
 
@@ -62,6 +65,13 @@ block: '{' stat* '}' ;
 
 breakStat: 'break' ;
 continueStat: 'continue' ;
+importStat
+    : 'import' STRING                                  # FullImport
+    | 'from' STRING 'import' idList                    # SelectiveImport
+    ;
+
+// Define idList for comma-separated identifiers
+idList: ID (',' ID)* ;
 
 
 
@@ -99,4 +109,6 @@ INVALID_NUMBER: [0-9]+ [a-zA-Z_]+ {raise Exception("Invalid number format: " + s
 INT: [0-9]+ ;
 FLOAT: [0-9]+'.'[0-9]+ ;
 STRING: '"' ( '\\"' | ~["\n\r] )* '"' ;
+LINE_COMMENT: '//' ~[\r\n]* -> skip; // Matches '//' followed by any characters except newline
+BLOCK_COMMENT: '/\\' .*? '/\\' -> skip; // Matches '/\*' then any char (non-greedy) until '\*/'
 WS: [ \t]+ -> skip ;

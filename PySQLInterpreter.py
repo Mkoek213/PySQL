@@ -3,6 +3,7 @@ from antlr4.error.ErrorListener import ErrorListener
 from PySQLLexer import PySQLLexer
 from PySQLParser import PySQLParser
 from PySQLVisitor import PySQLVisitor
+import os
 
 # Exception to unwind stack on return
 class ReturnException(Exception):
@@ -10,10 +11,141 @@ class ReturnException(Exception):
         self.value = value
 
 class PySQLInterpreter(PySQLVisitor):
-    def __init__(self):
+    def __init__(self, base_dir="", shared_import_context=None):
         self.memory = {}
-        self.var_types = {}  # Nazwa → (typ, linia)
-        self.functions = {}  # name -> (params, return_type, body_ctx)
+        self.var_types = {}
+        self.functions = {}
+        self.base_dir = base_dir # Base directory for resolving relative import paths
+
+        if shared_import_context is None:
+            # This dictionary will store the state of already parsed modules
+            # and a set to track files currently being parsed to detect circular imports.
+            self.shared_import_context = {
+                'globally_parsed_modules': {}, # file_path -> {'memory':..., 'functions':..., 'var_types':...}
+                'currently_parsing': set()     # set of absolute file_paths
+            }
+        else:
+            self.shared_import_context = shared_import_context
+
+           
+    def _get_or_parse_module(self, relative_path):
+        # Determine the absolute path of the file to import
+        # relative_path is from the import statement, e.g., "utils.txt"
+        # self.base_dir is the directory of the file *currently being interpreted*
+        file_path_to_import = os.path.abspath(os.path.join(self.base_dir, relative_path))
+
+        if file_path_to_import in self.shared_import_context['globally_parsed_modules']:
+            return self.shared_import_context['globally_parsed_modules'][file_path_to_import]
+
+        if file_path_to_import in self.shared_import_context['currently_parsing']:
+            raise Exception(f"Circular import detected: File {file_path_to_import} is already being parsed.")
+
+        self.shared_import_context['currently_parsing'].add(file_path_to_import)
+
+        if not os.path.exists(file_path_to_import):
+            self.shared_import_context['currently_parsing'].remove(file_path_to_import)
+            raise Exception(f"Import file not found: {file_path_to_import}")
+
+        with open(file_path_to_import, 'r', encoding='utf-8') as f:
+            imported_code = f.read()
+
+        lexer = PySQLLexer(InputStream(imported_code))
+        stream = CommonTokenStream(lexer)
+        parser = PySQLParser(stream)
+
+        # It's good practice to attach error listeners to these new instances too
+        error_listener = PySQLErrorListener() # Assuming PySQLErrorListener is defined
+        lexer.removeErrorListeners()
+        lexer.addErrorListener(error_listener)
+        parser.removeErrorListeners()
+        parser.addErrorListener(error_listener)
+
+        tree = parser.prog()
+
+        # Create a new interpreter for the imported file's scope.
+        # It gets the base directory of the imported file and shares the import context.
+        module_interpreter = PySQLInterpreter(
+            base_dir=os.path.dirname(file_path_to_import),
+            shared_import_context=self.shared_import_context 
+        )
+
+        try:
+            module_interpreter.visit(tree) # This populates module_interpreter's state
+        except Exception as e:
+            # Clean up before re-raising to allow trying to parse this file again if imported elsewhere non-circularly
+            self.shared_import_context['currently_parsing'].remove(file_path_to_import)
+            raise Exception(f"Error while parsing imported file '{file_path_to_import}': {str(e)}")
+
+
+        # Store the clean state (memory, functions, types) of the parsed module
+        module_state = {
+            'memory': module_interpreter.memory.copy(),
+            'functions': module_interpreter.functions.copy(),
+            'var_types': module_interpreter.var_types.copy()
+        }
+
+        self.shared_import_context['globally_parsed_modules'][file_path_to_import] = module_state
+        self.shared_import_context['currently_parsing'].remove(file_path_to_import)
+
+        return module_state
+    
+    def visitFullImport(self, ctx: PySQLParser.FullImportContext): # Parameter type from ANTLR
+        path_raw = ctx.STRING().getText()[1:-1] # Get "file.txt"
+
+        module_state = self._get_or_parse_module(path_raw)
+
+        # Merge all variables from the imported module into the current scope
+        for name, value in module_state['memory'].items():
+            if name in self.functions: # Check for clash with existing function in current scope
+                raise Exception(f"Name clash during full import from '{path_raw}': Cannot import variable '{name}', a function with this name already exists in the current scope.")
+            self.memory[name] = value
+            if name in module_state['var_types']: # Also copy type information
+                self.var_types[name] = module_state['var_types'][name]
+
+        # Merge all functions from the imported module into the current scope
+        for name, func_def in module_state['functions'].items():
+            if name in self.memory:  # Check for clash with existing variable in current scope
+                raise Exception(f"Name clash during full import from '{path_raw}': Cannot import function '{name}', a variable with this name already exists in the current scope.")
+            self.functions[name] = func_def
+
+        return None # Import statements don't produce a value
+    
+    def visitSelectiveImport(self, ctx: PySQLParser.SelectiveImportContext): # Parameter type from ANTLR
+        path_raw = ctx.STRING().getText()[1:-1] # Get "file.txt"
+
+        # Get the list of identifiers to import
+        items_to_import = [id_node.getText() for id_node in ctx.idList().ID()]
+
+        module_state = self._get_or_parse_module(path_raw)
+
+        for item_name in items_to_import:
+            imported_successfully = False
+
+            # Try to import as a variable
+            if item_name in module_state['memory']:
+                if item_name in self.functions: # Clash with existing function in current scope
+                    raise Exception(f"Name clash while importing '{item_name}' from '{path_raw}': A function with this name already exists in the current scope.")
+                self.memory[item_name] = module_state['memory'][item_name]
+                if item_name in module_state['var_types']:
+                    self.var_types[item_name] = module_state['var_types'][item_name]
+                imported_successfully = True
+
+            # Try to import as a function (only if not already imported as a variable with the same name)
+            if item_name in module_state['functions']:
+                if not imported_successfully: # Not yet imported as a variable
+                    if item_name in self.memory: # Clash with existing variable in current scope
+                        raise Exception(f"Name clash while importing function '{item_name}' from '{path_raw}': A variable with this name already exists in the current scope.")
+                    self.functions[item_name] = module_state['functions'][item_name]
+                    imported_successfully = True
+                # If imported_successfully is True here, it means item_name was already imported as a variable.
+                # You might decide if a function can overwrite a variable or vice-versa, or if it's an error.
+                # Current logic: if a variable was found and imported, we don't then import a function of the same name.
+                # If both variable and function exist with the same name in the source module, variable takes precedence here.
+
+            if not imported_successfully:
+                raise Exception(f"Item '{item_name}' not found as variable or function in module '{path_raw}' (imported at line {ctx.start.line})")
+
+        return None
     
     # Function definition: store signature and body
     def visitFuncDef(self, ctx):
@@ -41,17 +173,23 @@ class PySQLInterpreter(PySQLVisitor):
         value = self.visit(ctx.expr())
         line = ctx.start.line
 
-        if value is None:
+        if value is None: # Should not happen if expr always yields a value
             raise Exception(f"Invalid value assigned to '{var_name}' at line {line}")
 
         value_type = self.infer_type(value)
 
         if var_name in self.var_types:
             declared_type, decl_line = self.var_types[var_name]
+
+            # Implicit promotion from int to float
+            if declared_type == 'float' and value_type == 'int':
+                value = float(value)
+                value_type = 'float' # Update value_type after promotion
+
             if not self.type_matches(declared_type, value_type):
                 raise Exception(f"Type mismatch on assignment to '{var_name}' at line {line}. Declared as {declared_type} at line {decl_line}, assigned value of type {value_type}")
         else:
-            # Infer type if not declared yet
+            # Variable not declared, infer its type from this first assignment
             self.var_types[var_name] = (value_type, line)
 
         self.memory[var_name] = value
@@ -131,7 +269,7 @@ class PySQLInterpreter(PySQLVisitor):
             right = self.visit(ctx.factor(i))
             result = self.apply_operator(result, op, right, ctx.start.line)
         return result
-    
+        
     def visitVarDecl(self, ctx):
         declared_type = ctx.varType().getText()
         var_name = ctx.ID().getText()
@@ -144,62 +282,144 @@ class PySQLInterpreter(PySQLVisitor):
         value = self.visit(ctx.expr()) if ctx.expr() else None
         if value is not None:
             inferred_type = self.infer_type(value)
-            if not self.type_matches(declared_type, inferred_type):
+
+            # Implicit promotion from int to float
+            if declared_type == 'float' and inferred_type == 'int':
+                value = float(value)
+                inferred_type = 'float' # Update inferred_type after promotion
+
+            if not self.type_matches(declared_type, inferred_type): # type_matches already allows int for float
                 raise Exception(f"Type mismatch in declaration of '{var_name}' at line {line}: expected {declared_type}, got {inferred_type}")
+
         self.memory[var_name] = value
         self.var_types[var_name] = (declared_type, line)
         return value
 
 
-    def visitFactor(self, ctx):
-        if ctx.getChildCount() == 2 and ctx.getChild(0).getText() in ('+', '-'):
-            op = ctx.getChild(0).getText()
-            value = self.visit(ctx.factor())
-            if isinstance(value, bool):
-                raise Exception(f"Invalid use of unary '{op}' with boolean value at line {ctx.start.line}")
-            if isinstance(value, (int, float)):
-                return -value if op == '-' else value  # + is a no-op for numbers
-            else:
-                raise Exception(f"Invalid type for unary '{op}' operator at line {ctx.start.line}")
+    def visitFactor(self, ctx: PySQLParser.FactorContext):
+        if ctx.getChildCount() == 4 and \
+           ctx.getChild(0).getText() == '(' and \
+           isinstance(ctx.getChild(1), PySQLParser.VarTypeContext) and \
+           ctx.getChild(2).getText() == ')':
+            target_type_str = ctx.varType().getText()
+            value_to_cast = self.visit(ctx.factor()) 
+
+            if target_type_str == 'int':
+                if isinstance(value_to_cast, float): return int(value_to_cast)
+                if isinstance(value_to_cast, bool): return 1 if value_to_cast else 0
+                if isinstance(value_to_cast, int): return value_to_cast
+                raise Exception(f"Cannot cast type {self.infer_type(value_to_cast)} to 'int' at line {ctx.start.line}")
             
-        if ctx.getChildCount() >= 2 and ctx.ID() and ctx.getChild(1).getText() == '(' and ctx.getChild(ctx.getChildCount() - 1).getText() == ')':
+            elif target_type_str == 'float':
+                if isinstance(value_to_cast, int): return float(value_to_cast)
+                if isinstance(value_to_cast, bool): return 1.0 if value_to_cast else 0.0
+                if isinstance(value_to_cast, float): return value_to_cast
+                raise Exception(f"Cannot cast type {self.infer_type(value_to_cast)} to 'float' at line {ctx.start.line}")
+
+            elif target_type_str == 'bool':
+                if isinstance(value_to_cast, int): return value_to_cast != 0
+                if isinstance(value_to_cast, float): return value_to_cast != 0.0
+                if isinstance(value_to_cast, bool): return value_to_cast
+                raise Exception(f"Cannot cast type {self.infer_type(value_to_cast)} to 'bool' at line {ctx.start.line}")
+            
+            else:
+                raise Exception(f"Unsupported cast to type '{target_type_str}' at line {ctx.start.line}")
+
+        elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() in ('+', '-') and isinstance(ctx.factor(0), PySQLParser.FactorContext):
+            op = ctx.getChild(0).getText()
+            value = self.visit(ctx.factor(0))
+            if isinstance(value, bool):
+                raise Exception(f"Unary '{op}' cannot be applied to boolean values at line {ctx.start.line}")
+            if isinstance(value, (int, float)):
+                return -value if op == '-' else value
+            else:
+                raise Exception(f"Invalid type for unary '{op}' operator at line {ctx.start.line}. Expected number, got {self.infer_type(value)}.")
+        
+        elif ctx.INT(): return int(ctx.INT().getText())
+        elif ctx.FLOAT(): return float(ctx.FLOAT().getText())
+        elif ctx.STRING(): return ctx.STRING().getText()[1:-1]
+        elif ctx.BOOL(): return ctx.BOOL().getText().lower() == 'true'
+
+        elif ctx.ID() and ctx.getChild(1) and ctx.getChild(1).getText() == '(':
             fname = ctx.ID().getText()
             args = []
             if ctx.exprList():
-                for e in ctx.exprList().expr():
-                    args.append(self.visit(e))
+                for e_ctx in ctx.exprList().expr():
+                    args.append(self.visit(e_ctx))
+            
             if fname not in self.functions:
                 raise Exception(f"Undefined function '{fname}' at line {ctx.start.line}")
-            params, ret_type, body = self.functions[fname]
+            
+            params, ret_type, body_stmts = self.functions[fname]
+
             if len(args) != len(params):
                 raise Exception(f"Function '{fname}' expects {len(params)} args, got {len(args)} at line {ctx.start.line}")
-            # Type check args and setup frame
+
             saved_memory = self.memory.copy()
             saved_types = self.var_types.copy()
-            for (pname, ptype), val in zip(params, args):
+            current_call_line = ctx.start.line
+
+            for i, ((pname, ptype), val) in enumerate(zip(params, args)):
                 actual_type = self.infer_type(val)
+                arg_line = ctx.exprList().expr(i).start.line if ctx.exprList() and ctx.exprList().expr(i) else current_call_line
+
+                if ptype == 'float' and actual_type == 'int':
+                    val = float(val)
+                    actual_type = 'float'
+
                 if not self.type_matches(ptype, actual_type):
-                    raise Exception(f"Incorrect type for parameter '{pname}' in call to '{fname}' at line {ctx.start.line}")
+                     raise Exception(f"Incorrect type for parameter '{pname}' (index {i}) in call to '{fname}' at line {arg_line}. Expected {ptype}, got {actual_type}")
                 self.memory[pname] = val
-                self.var_types[pname] = (ptype, ctx.start.line)
-            # Execute function body
+                self.var_types[pname] = (ptype, arg_line)
+            
             try:
-                for stmt in body:
-                    self.visit(stmt)
+                for stmt_ctx in body_stmts:
+                    self.visit(stmt_ctx)
             except ReturnException as r:
                 result = r.value
-                # Check return type unless void
                 if ret_type != 'void':
-                    actual = self.infer_type(result)
-                    if not self.type_matches(ret_type, actual):
-                        raise Exception(f"Function '{fname}' should return {ret_type}, got {actual} at line {ctx.start.line}")
+                    actual_ret_type = self.infer_type(result)
+                    if ret_type == 'float' and actual_ret_type == 'int':
+                        result = float(result)
+                        actual_ret_type = 'float'
+                    if not self.type_matches(ret_type, actual_ret_type):
+                        raise Exception(f"Function '{fname}' should return {ret_type}, got {actual_ret_type}. Called at line {current_call_line}")
                 self.memory = saved_memory
                 self.var_types = saved_types
                 return result
-            # No return found
+            
             self.memory = saved_memory
             self.var_types = saved_types
+            if ret_type != 'void':
+                 raise Exception(f"Function '{fname}' defined with return type '{ret_type}' did not return a value. Called at line {current_call_line}")
             return None
+
+        elif ctx.ID():
+            var_name = ctx.ID().getText()
+            if var_name not in self.memory:
+                raise Exception(f"Undefined variable '{var_name}' at line {ctx.start.line}")
+            return self.memory[var_name]
+
+        elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() == 'not':
+            val_to_negate = self.visit(ctx.factor(0))
+            if not isinstance(val_to_negate, bool):
+                raise Exception(f"'not' operator requires a boolean operand, got {self.infer_type(val_to_negate)} at line {ctx.start.line}")
+            return not val_to_negate
+
+        elif ctx.expr() and ctx.getChildCount() == 3 and \
+             ctx.getChild(0).getText() == '(' and \
+             isinstance(ctx.expr(0), PySQLParser.ExprContext) and \
+             ctx.getChild(2).getText() == ')':
+            return self.visit(ctx.expr(0))
+        
+        elif ctx.arrayLiteral():
+            raise NotImplementedError(f"Array literal handling not fully implemented in visitFactor at line {ctx.start.line}")
+
+        elif ctx.selectExpr():
+            return self.visit(ctx.selectExpr(0))
+
+        else:
+            raise Exception(f"Invalid or unhandled factor structure near '{ctx.getText()}' at line {ctx.start.line}")
         
     
         if ctx.INT():
@@ -266,6 +486,11 @@ class PySQLInterpreter(PySQLVisitor):
         value = self.visit(ctx.expr())
         print(value)
         return value
+    
+    def visitProg(self, ctx):
+        for child in ctx.stat():
+            self.visit(child)
+
 
     def visitIfStat(self, ctx):
         condition = self.visit(ctx.expr())
@@ -349,26 +574,22 @@ class PySQLErrorListener(ErrorListener):
 
 # Uruchamianie interpretera
 
-def run_interpreter(input_code):
+def run_interpreter(input_code, base_dir=""):
     lexer = PySQLLexer(InputStream(input_code))
     lexer.removeErrorListeners()
-    lexer.addErrorListener(PySQLErrorListener())  # Added custom error listener (lexer)
+    lexer.addErrorListener(PySQLErrorListener())
 
     stream = CommonTokenStream(lexer)
-
     parser = PySQLParser(stream)
     parser.removeErrorListeners()
-    parser.addErrorListener(PySQLErrorListener())  # Added custom error listener (parser)
-
+    parser.addErrorListener(PySQLErrorListener())
 
     try:
         tree = parser.prog()
-        interpreter = PySQLInterpreter()
+        interpreter = PySQLInterpreter(base_dir)
         interpreter.visit(tree)
     except Exception as e:
-        print(f"Error: {e}")    # tree = parser.prog()
-    # interpreter = PySQLInterpreter()
-    # interpreter.visit(tree)
+        print(f"Error: {e}")
 
 
 if __name__ == "__main__":
@@ -381,11 +602,13 @@ if __name__ == "__main__":
     try:
         with open(filename, 'r', encoding='utf-8') as f:
             input_code = f.read()
-        run_interpreter(input_code)
+        base_dir = os.path.dirname(os.path.abspath(filename))
+        run_interpreter(input_code, base_dir)
     except FileNotFoundError:
         print(f"Error: File '{filename}' not found.")
     except Exception as e:
         print(f"An error occurred: {e}")
+
 
     
 
