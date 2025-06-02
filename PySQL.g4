@@ -65,7 +65,13 @@ block: '{' stat* '}' ;
 
 breakStat: 'break' ;
 continueStat: 'continue' ;
-importStat: 'import' STRING ;
+importStat
+    : 'import' STRING                                  # FullImport
+    | 'from' STRING 'import' idList                    # SelectiveImport
+    ;
+
+// Define idList for comma-separated identifiers
+idList: ID (',' ID)* ;
 
 
 

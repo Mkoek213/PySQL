@@ -1,4 +1,4 @@
-import "utils.txt"
+from "utils.txt" import x, add
 
 print("Main started")
 print(add(2, 3))
@@ -7,6 +7,9 @@ int z = 6
 /\  komentarz wieloliniowy
    z = z + 4
 /\
-z = (float)z
+float y = (float)z
+float h = (float)true
 print(z)
+print(y)
 print(x)
+print(h)

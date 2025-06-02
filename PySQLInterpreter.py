@@ -11,35 +11,141 @@ class ReturnException(Exception):
         self.value = value
 
 class PySQLInterpreter(PySQLVisitor):
-    def __init__(self, base_dir=""):
+    def __init__(self, base_dir="", shared_import_context=None):
         self.memory = {}
         self.var_types = {}
         self.functions = {}
-        self.base_dir = base_dir
-        self.already_imported = set()
+        self.base_dir = base_dir # Base directory for resolving relative import paths
 
-    def visitImportStat(self, ctx):
-        path_raw = ctx.STRING().getText()[1:-1]  # Remove quotes
-        file_path = os.path.join(self.base_dir, path_raw)
+        if shared_import_context is None:
+            # This dictionary will store the state of already parsed modules
+            # and a set to track files currently being parsed to detect circular imports.
+            self.shared_import_context = {
+                'globally_parsed_modules': {}, # file_path -> {'memory':..., 'functions':..., 'var_types':...}
+                'currently_parsing': set()     # set of absolute file_paths
+            }
+        else:
+            self.shared_import_context = shared_import_context
 
-        if file_path in self.already_imported:
-            return  # Prevent re-import
+           
+    def _get_or_parse_module(self, relative_path):
+        # Determine the absolute path of the file to import
+        # relative_path is from the import statement, e.g., "utils.txt"
+        # self.base_dir is the directory of the file *currently being interpreted*
+        file_path_to_import = os.path.abspath(os.path.join(self.base_dir, relative_path))
 
-        if not os.path.exists(file_path):
-            raise Exception(f"Import file not found: {file_path}")
+        if file_path_to_import in self.shared_import_context['globally_parsed_modules']:
+            return self.shared_import_context['globally_parsed_modules'][file_path_to_import]
 
-        with open(file_path, 'r', encoding='utf-8') as f:
+        if file_path_to_import in self.shared_import_context['currently_parsing']:
+            raise Exception(f"Circular import detected: File {file_path_to_import} is already being parsed.")
+
+        self.shared_import_context['currently_parsing'].add(file_path_to_import)
+
+        if not os.path.exists(file_path_to_import):
+            self.shared_import_context['currently_parsing'].remove(file_path_to_import)
+            raise Exception(f"Import file not found: {file_path_to_import}")
+
+        with open(file_path_to_import, 'r', encoding='utf-8') as f:
             imported_code = f.read()
 
-        # Parse the imported file
         lexer = PySQLLexer(InputStream(imported_code))
         stream = CommonTokenStream(lexer)
         parser = PySQLParser(stream)
+
+        # It's good practice to attach error listeners to these new instances too
+        error_listener = PySQLErrorListener() # Assuming PySQLErrorListener is defined
+        lexer.removeErrorListeners()
+        lexer.addErrorListener(error_listener)
+        parser.removeErrorListeners()
+        parser.addErrorListener(error_listener)
+
         tree = parser.prog()
 
-        self.visitProg(tree)
+        # Create a new interpreter for the imported file's scope.
+        # It gets the base directory of the imported file and shares the import context.
+        module_interpreter = PySQLInterpreter(
+            base_dir=os.path.dirname(file_path_to_import),
+            shared_import_context=self.shared_import_context 
+        )
 
-        self.already_imported.add(file_path)
+        try:
+            module_interpreter.visit(tree) # This populates module_interpreter's state
+        except Exception as e:
+            # Clean up before re-raising to allow trying to parse this file again if imported elsewhere non-circularly
+            self.shared_import_context['currently_parsing'].remove(file_path_to_import)
+            raise Exception(f"Error while parsing imported file '{file_path_to_import}': {str(e)}")
+
+
+        # Store the clean state (memory, functions, types) of the parsed module
+        module_state = {
+            'memory': module_interpreter.memory.copy(),
+            'functions': module_interpreter.functions.copy(),
+            'var_types': module_interpreter.var_types.copy()
+        }
+
+        self.shared_import_context['globally_parsed_modules'][file_path_to_import] = module_state
+        self.shared_import_context['currently_parsing'].remove(file_path_to_import)
+
+        return module_state
+    
+    def visitFullImport(self, ctx: PySQLParser.FullImportContext): # Parameter type from ANTLR
+        path_raw = ctx.STRING().getText()[1:-1] # Get "file.txt"
+
+        module_state = self._get_or_parse_module(path_raw)
+
+        # Merge all variables from the imported module into the current scope
+        for name, value in module_state['memory'].items():
+            if name in self.functions: # Check for clash with existing function in current scope
+                raise Exception(f"Name clash during full import from '{path_raw}': Cannot import variable '{name}', a function with this name already exists in the current scope.")
+            self.memory[name] = value
+            if name in module_state['var_types']: # Also copy type information
+                self.var_types[name] = module_state['var_types'][name]
+
+        # Merge all functions from the imported module into the current scope
+        for name, func_def in module_state['functions'].items():
+            if name in self.memory:  # Check for clash with existing variable in current scope
+                raise Exception(f"Name clash during full import from '{path_raw}': Cannot import function '{name}', a variable with this name already exists in the current scope.")
+            self.functions[name] = func_def
+
+        return None # Import statements don't produce a value
+    
+    def visitSelectiveImport(self, ctx: PySQLParser.SelectiveImportContext): # Parameter type from ANTLR
+        path_raw = ctx.STRING().getText()[1:-1] # Get "file.txt"
+
+        # Get the list of identifiers to import
+        items_to_import = [id_node.getText() for id_node in ctx.idList().ID()]
+
+        module_state = self._get_or_parse_module(path_raw)
+
+        for item_name in items_to_import:
+            imported_successfully = False
+
+            # Try to import as a variable
+            if item_name in module_state['memory']:
+                if item_name in self.functions: # Clash with existing function in current scope
+                    raise Exception(f"Name clash while importing '{item_name}' from '{path_raw}': A function with this name already exists in the current scope.")
+                self.memory[item_name] = module_state['memory'][item_name]
+                if item_name in module_state['var_types']:
+                    self.var_types[item_name] = module_state['var_types'][item_name]
+                imported_successfully = True
+
+            # Try to import as a function (only if not already imported as a variable with the same name)
+            if item_name in module_state['functions']:
+                if not imported_successfully: # Not yet imported as a variable
+                    if item_name in self.memory: # Clash with existing variable in current scope
+                        raise Exception(f"Name clash while importing function '{item_name}' from '{path_raw}': A variable with this name already exists in the current scope.")
+                    self.functions[item_name] = module_state['functions'][item_name]
+                    imported_successfully = True
+                # If imported_successfully is True here, it means item_name was already imported as a variable.
+                # You might decide if a function can overwrite a variable or vice-versa, or if it's an error.
+                # Current logic: if a variable was found and imported, we don't then import a function of the same name.
+                # If both variable and function exist with the same name in the source module, variable takes precedence here.
+
+            if not imported_successfully:
+                raise Exception(f"Item '{item_name}' not found as variable or function in module '{path_raw}' (imported at line {ctx.start.line})")
+
+        return None
     
     # Function definition: store signature and body
     def visitFuncDef(self, ctx):
