@@ -1,0 +1,7 @@
+func add(a: int, b: int) -> int exec (
+    return a + b
+)
+
+int x = 5
+
+x = x + 7

@@ -3,6 +3,7 @@ from antlr4.error.ErrorListener import ErrorListener
 from PySQLLexer import PySQLLexer
 from PySQLParser import PySQLParser
 from PySQLVisitor import PySQLVisitor
+import os
 
 # Exception to unwind stack on return
 class ReturnException(Exception):
@@ -10,10 +11,35 @@ class ReturnException(Exception):
         self.value = value
 
 class PySQLInterpreter(PySQLVisitor):
-    def __init__(self):
+    def __init__(self, base_dir=""):
         self.memory = {}
-        self.var_types = {}  # Nazwa → (typ, linia)
-        self.functions = {}  # name -> (params, return_type, body_ctx)
+        self.var_types = {}
+        self.functions = {}
+        self.base_dir = base_dir
+        self.already_imported = set()
+
+    def visitImportStat(self, ctx):
+        path_raw = ctx.STRING().getText()[1:-1]  # Remove quotes
+        file_path = os.path.join(self.base_dir, path_raw)
+
+        if file_path in self.already_imported:
+            return  # Prevent re-import
+
+        if not os.path.exists(file_path):
+            raise Exception(f"Import file not found: {file_path}")
+
+        with open(file_path, 'r', encoding='utf-8') as f:
+            imported_code = f.read()
+
+        # Parse the imported file
+        lexer = PySQLLexer(InputStream(imported_code))
+        stream = CommonTokenStream(lexer)
+        parser = PySQLParser(stream)
+        tree = parser.prog()
+
+        self.visitProg(tree)
+
+        self.already_imported.add(file_path)
     
     # Function definition: store signature and body
     def visitFuncDef(self, ctx):
@@ -266,6 +292,11 @@ class PySQLInterpreter(PySQLVisitor):
         value = self.visit(ctx.expr())
         print(value)
         return value
+    
+    def visitProg(self, ctx):
+        for child in ctx.stat():
+            self.visit(child)
+
 
     def visitIfStat(self, ctx):
         condition = self.visit(ctx.expr())
@@ -349,26 +380,22 @@ class PySQLErrorListener(ErrorListener):
 
 # Uruchamianie interpretera
 
-def run_interpreter(input_code):
+def run_interpreter(input_code, base_dir=""):
     lexer = PySQLLexer(InputStream(input_code))
     lexer.removeErrorListeners()
-    lexer.addErrorListener(PySQLErrorListener())  # Added custom error listener (lexer)
+    lexer.addErrorListener(PySQLErrorListener())
 
     stream = CommonTokenStream(lexer)
-
     parser = PySQLParser(stream)
     parser.removeErrorListeners()
-    parser.addErrorListener(PySQLErrorListener())  # Added custom error listener (parser)
-
+    parser.addErrorListener(PySQLErrorListener())
 
     try:
         tree = parser.prog()
-        interpreter = PySQLInterpreter()
+        interpreter = PySQLInterpreter(base_dir)
         interpreter.visit(tree)
     except Exception as e:
-        print(f"Error: {e}")    # tree = parser.prog()
-    # interpreter = PySQLInterpreter()
-    # interpreter.visit(tree)
+        print(f"Error: {e}")
 
 
 if __name__ == "__main__":
@@ -381,11 +408,13 @@ if __name__ == "__main__":
     try:
         with open(filename, 'r', encoding='utf-8') as f:
             input_code = f.read()
-        run_interpreter(input_code)
+        base_dir = os.path.dirname(os.path.abspath(filename))
+        run_interpreter(input_code, base_dir)
     except FileNotFoundError:
         print(f"Error: File '{filename}' not found.")
     except Exception as e:
         print(f"An error occurred: {e}")
+
 
     
 

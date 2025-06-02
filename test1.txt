@@ -1,3 +1,5 @@
-a = 5
-b = 6
-print(a + b)
+import "utils.txt"
+
+print("Main started")
+print(add(2, 3))
+print(x)

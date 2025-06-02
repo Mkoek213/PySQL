@@ -13,6 +13,7 @@ stat:   varDecl
       | returnStat // new
       | breakStat
       | continueStat
+      | importStat 
       ;
 
 varDecl: varType ID ('=' expr)? ;
@@ -48,6 +49,7 @@ selectExpr: SELECT expr FROM expr (WHERE expr)? (ORDER BY (ASC | DESC))? ;
 // Nowy literał tablicowy
 arrayLiteral: '[' (expr (',' expr)*)? ']' ;
 
+IMPORT: 'import';
 PRINT: 'print' ;
 printStat: PRINT '(' expr ')' ;
 
@@ -62,6 +64,7 @@ block: '{' stat* '}' ;
 
 breakStat: 'break' ;
 continueStat: 'continue' ;
+importStat: 'import' STRING ;
 
 
 
