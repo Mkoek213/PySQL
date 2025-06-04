@@ -4,22 +4,105 @@ from PySQLLexer import PySQLLexer
 from PySQLParser import PySQLParser
 from PySQLVisitor import PySQLVisitor
 import os
+import difflib
+from antlr4.error.Errors import (
+    LexerNoViableAltException,
+    InputMismatchException,    
+    NoViableAltException,      
+    FailedPredicateException,  
+    RecognitionException       
+)
+
+
+
+def get_closest_match(name, candidates, cutoff=0.6, n=1):
+    """Znajduje najbliższe dopasowania dla 'name' w liście 'candidates'."""
+    matches = difflib.get_close_matches(name, candidates, n=n, cutoff=cutoff)
+    if matches:
+        if len(matches) == 1:
+            return f"Did you mean '{matches[0]}'?"
+        else:
+            return f"Did you mean one of: {', '.join(f'{m}' for m in matches)}?"
+    return None
 
 # Exception to unwind stack on return
 class ReturnException(Exception):
     def __init__(self, value):
         self.value = value
 
+# Dodaj te definicje na początku pliku lub w osobnym module
+class PySQLException(Exception):
+    def __init__(self, message, line=None, column=None, context_text=None, suggestion=None):
+        super().__init__(message)
+        self.message = message
+        self.line = line
+        self.column = column
+        self.context_text = context_text # Tekst tokenu/reguły, która spowodowała błąd
+        self.suggestion = suggestion     # Sugestia (np. "Did you mean 'length'?")
+
+    def __str__(self):
+        error_msg = f"{self.__class__.__name__}: {self.message}"
+        if self.line is not None:
+            error_msg += f" at line {self.line}"
+            if self.column is not None:
+                error_msg += f":{self.column}"
+        if self.context_text:
+            error_msg += f" (near '{self.context_text}')"
+        if self.suggestion:
+            error_msg += f". {self.suggestion}"
+        return error_msg
+
+class PySQLSyntaxError(PySQLException): # Dziedziczy z PySQLException
+    def __str__(self):
+        # Zaczynamy od nazwy klasy i głównego komunikatu
+        error_msg = f"{self.__class__.__name__}: {self.message}"
+
+        # Dodajemy informację o linii, jeśli jest dostępna
+        if self.line is not None:
+            error_msg += f" at line {self.line}"
+        # CELOWO POMIJAMY INFORMACJĘ O KOLUMNIE dla PySQLSyntaxError
+
+        # Dodajemy tekst kontekstowy, jeśli jest dostępny (tak jak w klasie bazowej)
+        if self.context_text:
+            error_msg += f" (near '{self.context_text}')"
+
+        # Dodajemy sugestię, jeśli jest dostępna (tak jak w klasie bazowej)
+        # Zakładamy, że self.suggestion jest atrybutem z klasy bazowej
+        if self.suggestion:
+            error_msg += f". {self.suggestion}"
+            
+        return error_msg
+class PySQLNameError(PySQLException):
+    def __str__(self):
+        error_msg = f"{self.__class__.__name__}: {self.message}"
+        if self.line is not None:
+            error_msg += f" at line {self.line}"
+            if self.column is not None:
+                error_msg += f":{self.column}"
+        
+        # Sprawdź, czy context_text nie jest po prostu powtórzeniem nazwy z message
+        # To jest uproszczone założenie, możesz potrzebować bardziej
+        # zaawansowanej logiki, aby uniknąć redundancji.
+        # Na przykład, jeśli message zawsze zawiera nazwę w cudzysłowach.
+        if self.context_text and self.context_text not in self.message:
+             error_msg += f" (near '{self.context_text}')"
+        
+        if self.suggestion:
+            error_msg += f". {self.suggestion}"
+        return error_msg
+class PySQLTypeError(PySQLException): pass
+class PySQLValueError(PySQLException): pass   # Np. dzielenie przez zero, błędy konwersji
+class PySQLImportError(PySQLException): pass
+class PySQLRuntimeError(PySQLException): pass  # Ogólne błędy wykonania
+
 class PySQLInterpreter(PySQLVisitor):
     def __init__(self, base_dir="", shared_import_context=None):
         self.memory = {}
         self.var_types = {}
         self.functions = {}
-        self.base_dir = base_dir # Base directory for resolving relative import paths
+        self.base_dir = base_dir 
 
         if shared_import_context is None:
-            # This dictionary will store the state of already parsed modules
-            # and a set to track files currently being parsed to detect circular imports.
             self.shared_import_context = {
                 'globally_parsed_modules': {}, # file_path -> {'memory':..., 'functions':..., 'var_types':...}
                 'currently_parsing': set()     # set of absolute file_paths
@@ -29,9 +112,6 @@ class PySQLInterpreter(PySQLVisitor):
 
            
     def _get_or_parse_module(self, relative_path):
-        # Determine the absolute path of the file to import
-        # relative_path is from the import statement, e.g., "utils.txt"
-        # self.base_dir is the directory of the file *currently being interpreted*
         file_path_to_import = os.path.abspath(os.path.join(self.base_dir, relative_path))
 
         if file_path_to_import in self.shared_import_context['globally_parsed_modules']:
@@ -53,7 +133,6 @@ class PySQLInterpreter(PySQLVisitor):
         stream = CommonTokenStream(lexer)
         parser = PySQLParser(stream)
 
-        # It's good practice to attach error listeners to these new instances too
         error_listener = PySQLErrorListener() # Assuming PySQLErrorListener is defined
         lexer.removeErrorListeners()
         lexer.addErrorListener(error_listener)
@@ -62,8 +141,6 @@ class PySQLInterpreter(PySQLVisitor):
 
         tree = parser.prog()
 
-        # Create a new interpreter for the imported file's scope.
-        # It gets the base directory of the imported file and shares the import context.
         module_interpreter = PySQLInterpreter(
             base_dir=os.path.dirname(file_path_to_import),
             shared_import_context=self.shared_import_context 
@@ -72,12 +149,10 @@ class PySQLInterpreter(PySQLVisitor):
         try:
             module_interpreter.visit(tree) # This populates module_interpreter's state
         except Exception as e:
-            # Clean up before re-raising to allow trying to parse this file again if imported elsewhere non-circularly
             self.shared_import_context['currently_parsing'].remove(file_path_to_import)
             raise Exception(f"Error while parsing imported file '{file_path_to_import}': {str(e)}")
 
 
-        # Store the clean state (memory, functions, types) of the parsed module
         module_state = {
             'memory': module_interpreter.memory.copy(),
             'functions': module_interpreter.functions.copy(),
@@ -94,7 +169,6 @@ class PySQLInterpreter(PySQLVisitor):
 
         module_state = self._get_or_parse_module(path_raw)
 
-        # Merge all variables from the imported module into the current scope
         for name, value in module_state['memory'].items():
             if name in self.functions: # Check for clash with existing function in current scope
                 raise Exception(f"Name clash during full import from '{path_raw}': Cannot import variable '{name}', a function with this name already exists in the current scope.")
@@ -102,18 +176,16 @@ class PySQLInterpreter(PySQLVisitor):
             if name in module_state['var_types']: # Also copy type information
                 self.var_types[name] = module_state['var_types'][name]
 
-        # Merge all functions from the imported module into the current scope
         for name, func_def in module_state['functions'].items():
             if name in self.memory:  # Check for clash with existing variable in current scope
                 raise Exception(f"Name clash during full import from '{path_raw}': Cannot import function '{name}', a variable with this name already exists in the current scope.")
             self.functions[name] = func_def
 
-        return None # Import statements don't produce a value
+        return None 
     
     def visitSelectiveImport(self, ctx: PySQLParser.SelectiveImportContext): # Parameter type from ANTLR
         path_raw = ctx.STRING().getText()[1:-1] # Get "file.txt"
 
-        # Get the list of identifiers to import
         items_to_import = [id_node.getText() for id_node in ctx.idList().ID()]
 
         module_state = self._get_or_parse_module(path_raw)
@@ -121,7 +193,6 @@ class PySQLInterpreter(PySQLVisitor):
         for item_name in items_to_import:
             imported_successfully = False
 
-            # Try to import as a variable
             if item_name in module_state['memory']:
                 if item_name in self.functions: # Clash with existing function in current scope
                     raise Exception(f"Name clash while importing '{item_name}' from '{path_raw}': A function with this name already exists in the current scope.")
@@ -130,24 +201,18 @@ class PySQLInterpreter(PySQLVisitor):
                     self.var_types[item_name] = module_state['var_types'][item_name]
                 imported_successfully = True
 
-            # Try to import as a function (only if not already imported as a variable with the same name)
             if item_name in module_state['functions']:
                 if not imported_successfully: # Not yet imported as a variable
                     if item_name in self.memory: # Clash with existing variable in current scope
                         raise Exception(f"Name clash while importing function '{item_name}' from '{path_raw}': A variable with this name already exists in the current scope.")
                     self.functions[item_name] = module_state['functions'][item_name]
                     imported_successfully = True
-                # If imported_successfully is True here, it means item_name was already imported as a variable.
-                # You might decide if a function can overwrite a variable or vice-versa, or if it's an error.
-                # Current logic: if a variable was found and imported, we don't then import a function of the same name.
-                # If both variable and function exist with the same name in the source module, variable takes precedence here.
 
             if not imported_successfully:
                 raise Exception(f"Item '{item_name}' not found as variable or function in module '{path_raw}' (imported at line {ctx.start.line})")
 
         return None
     
-    # Function definition: store signature and body
     def visitFuncDef(self, ctx):
         name = ctx.ID().getText()
         if name in self.functions:
@@ -164,7 +229,6 @@ class PySQLInterpreter(PySQLVisitor):
         self.functions[name] = (params, ret_type, body)
         return None
 
-    # Return statement: throw exception
     def visitReturnStat(self, ctx):
         val = self.visit(ctx.expr()) if ctx.expr() else None
         raise ReturnException(val)
@@ -325,9 +389,9 @@ class PySQLInterpreter(PySQLVisitor):
             else:
                 raise Exception(f"Unsupported cast to type '{target_type_str}' at line {ctx.start.line}")
 
-        elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() in ('+', '-') and isinstance(ctx.factor(0), PySQLParser.FactorContext):
+        elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() in ('+', '-') and isinstance(ctx.factor(), PySQLParser.FactorContext):
             op = ctx.getChild(0).getText()
-            value = self.visit(ctx.factor(0))
+            value = self.visit(ctx.factor())
             if isinstance(value, bool):
                 raise Exception(f"Unary '{op}' cannot be applied to boolean values at line {ctx.start.line}")
             if isinstance(value, (int, float)):
@@ -348,7 +412,15 @@ class PySQLInterpreter(PySQLVisitor):
                     args.append(self.visit(e_ctx))
             
             if fname not in self.functions:
-                raise Exception(f"Undefined function '{fname}' at line {ctx.start.line}")
+                # TUTAJ: Dodaj logikę sugestii
+                suggestion_text = get_closest_match(fname, self.functions.keys())
+                raise PySQLNameError(
+                    f"Undefined function '{fname}'",
+                    line=ctx.start.line,
+                    column=ctx.start.column,
+                    context_text=fname,
+                    suggestion=suggestion_text
+                )
             
             params, ret_type, body_stmts = self.functions[fname]
 
@@ -394,56 +466,40 @@ class PySQLInterpreter(PySQLVisitor):
                  raise Exception(f"Function '{fname}' defined with return type '{ret_type}' did not return a value. Called at line {current_call_line}")
             return None
 
-        elif ctx.ID():
+        elif ctx.ID(): # Gdy odwołujesz się do zmiennej
             var_name = ctx.ID().getText()
             if var_name not in self.memory:
-                raise Exception(f"Undefined variable '{var_name}' at line {ctx.start.line}")
+                # TUTAJ: Dodaj logikę sugestii
+                suggestion_text = get_closest_match(var_name, self.memory.keys())
+                raise PySQLNameError(
+                    f"Undefined variable '{var_name}'",
+                    line=ctx.start.line,
+                    column=ctx.start.column,
+                    context_text=var_name,
+                    suggestion=suggestion_text
+                )
             return self.memory[var_name]
 
         elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() == 'not':
-            val_to_negate = self.visit(ctx.factor(0))
+            val_to_negate = self.visit(ctx.factor())
             if not isinstance(val_to_negate, bool):
                 raise Exception(f"'not' operator requires a boolean operand, got {self.infer_type(val_to_negate)} at line {ctx.start.line}")
             return not val_to_negate
 
         elif ctx.expr() and ctx.getChildCount() == 3 and \
              ctx.getChild(0).getText() == '(' and \
-             isinstance(ctx.expr(0), PySQLParser.ExprContext) and \
+             isinstance(ctx.expr(), PySQLParser.ExprContext) and \
              ctx.getChild(2).getText() == ')':
-            return self.visit(ctx.expr(0))
+            return self.visit(ctx.expr())
         
         elif ctx.arrayLiteral():
             raise NotImplementedError(f"Array literal handling not fully implemented in visitFactor at line {ctx.start.line}")
 
         elif ctx.selectExpr():
-            return self.visit(ctx.selectExpr(0))
+            return self.visit(ctx.selectExpr())
 
         else:
             raise Exception(f"Invalid or unhandled factor structure near '{ctx.getText()}' at line {ctx.start.line}")
-        
-    
-        if ctx.INT():
-            return int(ctx.INT().getText())
-        elif ctx.FLOAT():
-            return float(ctx.FLOAT().getText())
-        elif ctx.STRING():
-            return ctx.STRING().getText()[1:-1]
-        elif ctx.BOOL():
-            return ctx.BOOL().getText().lower() == 'true'
-        # elif ctx.ID() and not ctx.expr():
-        elif ctx.ID() and ctx.getChildCount() == 1:
-            var_name = ctx.ID().getText()
-            if var_name not in self.memory:
-                raise Exception(f"Undefined variable '{var_name}' at line {ctx.start.line}")
-            return self.memory[var_name]
-        elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() == 'not':
-            return not self.visit(ctx.factor())
-        elif ctx.expr():
-            return self.visit(ctx.expr())
-        elif ctx.selectExpr():
-            return self.visit(ctx.selectExpr())
-        
-        raise Exception(f"Invalid factor at line {ctx.start.line}")
 
     def apply_operator(self, left, op, right, line):
         try:
@@ -548,29 +604,147 @@ class PySQLInterpreter(PySQLVisitor):
 class BreakException(Exception): pass
 class ContinueException(Exception): pass
 
-        
-# Error Handling
-class PySQLErrorListener(ErrorListener):
-    def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e):
-        # Handle lexer errors (token recognition)
-        if "token recognition error" in msg:
-            # Get the raw input text
-            input_stream = recognizer._input
-            text = input_stream.strdata
-            
-            # Look for unclosed quotes
-            quote_count = text.count('"')
-            if quote_count % 2 != 0:
-                # Find first unclosed quote
-                last_quote = text.rfind('"')
-                line_num = text[:last_quote].count('\n') + 1
-                raise Exception(f"Unterminated string literal starting at line {line_num}")
-            
-        raise Exception(f"Syntax error at line {line}:{column} - {msg}")
 
-    def reportError(self, recognizer, offendingSymbol, line, column, msg, e):
-        # Forward to syntaxError for consistency
-        self.syntaxError(recognizer, offendingSymbol, line, column, msg, e)
+
+class PySQLErrorListener(ErrorListener):
+    def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e: RecognitionException):
+        error_message = msg  # Domyślny komunikat ANTLR
+        context_text = None
+        suggestion = None   # Na razie nie implementujemy sugestii dla błędów składniowych
+
+        if offendingSymbol is not None:
+            context_text = offendingSymbol.text
+
+        # --- Obsługa błędów Leksera ---
+        if isinstance(e, LexerNoViableAltException):
+            char_in_error = self._get_char_error_display(e.input, e.startIndex)
+            error_message = f"Unrecognized character or sequence starting with '{char_in_error}'"
+            
+            # Sprawdzenie, czy błąd pochodzi z naszej akcji leksykalnej (np. INVALID_NUMBER)
+            if e.__cause__ is not None:
+                original_exception_message = str(e.__cause__)
+                if "Invalid number format" in original_exception_message:
+                    error_message = original_exception_message
+                    # context_text może być już częścią original_exception_message
+                    # np. "Invalid number format: 123bad"
+                    # Jeśli offendingSymbol.text jest bardziej precyzyjny, można go użyć.
+                    if offendingSymbol is not None: # Dla INVALID_NUMBER, offendingSymbol to cały błędny token
+                         context_text = offendingSymbol.text
+
+
+        # --- Obsługa błędów Parsera ---
+        elif isinstance(e, InputMismatchException):
+            found_token_display = self._get_token_display_name(recognizer, offendingSymbol)
+            expected_desc = self._get_expected_tokens_description(recognizer, recognizer.getExpectedTokens())
+            if offendingSymbol and offendingSymbol.type == Token.EOF:
+                error_message = f"Unexpected end of file; expecting {expected_desc}"
+                context_text = "end of file"
+            else:
+                error_message = f"Unexpected {found_token_display}; expecting {expected_desc}"
+        
+        elif isinstance(e, NoViableAltException):
+            # Ten błąd oznacza, że parser nie mógł dopasować żadnej alternatywy w regule.
+            # offendingSymbol to token, przy którym parser utknął.
+            token_display = self._get_token_display_name(recognizer, offendingSymbol)
+            error_message = f"Invalid or incomplete statement near {token_display}. Cannot determine how to proceed."
+            # Można spróbować uzyskać oczekiwane tokeny, ale dla NoViableAltException może to być mniej precyzyjne.
+            # expected_desc = self._get_expected_tokens_description(recognizer, recognizer.getExpectedTokens())
+            # if expected_desc:
+            #     error_message += f" Were you trying to write {expected_desc}?"
+
+        elif isinstance(e, FailedPredicateException):
+            token_display = self._get_token_display_name(recognizer, offendingSymbol)
+            predicate_text = e.predicate if e.predicate else "a specific condition"
+            # rule_name = recognizer.ruleNames[e.ruleIndex] # Nazwa reguły, w której predykat zawiódł
+            error_message = f"A grammar condition (predicate) was not met near {token_display} (failed: {predicate_text})"
+        
+        # --- Inne lub nieokreślone błędy rozpoznawania ---
+        # Jeśli 'e' nie jest None, ale nie pasuje do powyższych, użyj domyślnego 'msg'.
+        # 'msg' często jest już sformatowane przez ANTLR (np. "missing X", "extraneous Y").
+        # Można tutaj dodać logikę do "oczyszczania" lub upraszczania tych domyślnych wiadomości.
+        elif msg: # Jeśli 'e' jest innego typu lub None, ale 'msg' istnieje
+            error_message = msg # Użyj domyślnego komunikatu
+
+        # Domyślny context_text, jeśli nie został ustawiony przez konkretny handler błędu
+        if context_text is None and offendingSymbol is not None:
+            context_text = offendingSymbol.text
+        elif context_text is None and e is not None and hasattr(e, 'offendingToken') and e.offendingToken is not None:
+            context_text = e.offendingToken.text
+
+
+        raise PySQLSyntaxError(
+            message=error_message,
+            line=line,
+            column=column, # Przekazujemy kolumnę, ale __str__ w PySQLSyntaxError ją pominie
+            context_text=context_text,
+            suggestion=suggestion
+        )
+
+    def _get_char_error_display(self, input_stream: InputStream, start_index: int) -> str:
+        """Pomocnik do wyświetlania znaku, który spowodował błąd leksera."""
+        if input_stream is not None and 0 <= start_index < input_stream.size:
+            char = input_stream.getText(start_index, start_index)
+            if char == '\n': return "\\n"
+            if char == '\r': return "\\r"
+            if char == '\t': return "\\t"
+            if char == str(Token.EOF): return "<EOF>" # Teoretycznie nie powinno tu być EOF
+            return char
+        return "<unknown char>"
+
+    def _get_token_display_name(self, recognizer, token: Token) -> str:
+        """Zwraca czytelną nazwę dla tokenu."""
+        if token is None:
+            return "<no token>"
+        if token.type == Token.EOF:
+            return "<end of file>"
+        # recognizer.vocabulary.getDisplayName(token.type) jest preferowane
+        if hasattr(recognizer, 'vocabulary'):
+            name = recognizer.vocabulary.getDisplayName(token.type)
+            # Jeśli nazwa to literał (np. "'+'"), zwróć go. Jeśli symboliczna (np. "ID"), zwróć tekst tokenu.
+            if name == token.text or (name.startswith("'") and name.endswith("'")):
+                return name 
+            return f"{name} ('{token.text}')" # Np. "ID ('myVar')"
+        return f"token '{token.text}' (type {token.type})"
+
+
+    def _get_expected_tokens_description(self, recognizer, interval_set: IntervalSet) -> str:
+        """Tworzy czytelny opis oczekiwanych tokenów."""
+        if interval_set is None or not hasattr(recognizer, 'vocabulary'):
+            return "a specific token or sequence"
+
+        expected_names = []
+        # Iteracja po elementach IntervalSet (które są typami tokenów)
+        for i in range(interval_set.min_element, interval_set.max_element + 1): # Uproszczona iteracja, IntervalSet może mieć dziury
+            if not interval_set.contains(i):
+                continue
+
+            display_name = recognizer.vocabulary.getDisplayName(i)
+            if i == Token.EOF:
+                # Dodaj EOF tylko jeśli jest to jedno z niewielu oczekiwań
+                if len(interval_set) < 5 : # Arbitralny próg, żeby nie zaśmiecać
+                    expected_names.append("end of file")
+            elif i > 0: # Prawidłowe typy tokenów
+                if display_name.startswith("'") and display_name.endswith("'"):
+                    expected_names.append(display_name)  # np. "'if'", "'+'"
+                else:
+                    # Dla nazw symbolicznych (ID, INT), można je sformatować
+                    # Np. "an identifier", "an integer"
+                    article = "an" if display_name and display_name[0].lower() in "aeiouh" else "a"
+                    expected_names.append(f"{article} {display_name.lower()}")
+        
+        # Usuń duplikaty i ewentualnie posortuj
+        unique_token_names = sorted(list(set(expected_names)))
+        
+        if not unique_token_names:
+            return "a valid statement component"
+        if len(unique_token_names) == 1:
+            return unique_token_names[0]
+        # Ogranicz liczbę wyświetlanych oczekiwanych tokenów, aby nie przytłoczyć użytkownika
+        if len(unique_token_names) > 4:
+             # Weź pierwsze kilka i dodaj "..."
+            return "one of: " + ", ".join(unique_token_names[:3]) + ", or others"
+
+        return "one of: " + ", ".join(unique_token_names[:-1]) + " or " + unique_token_names[-1]
 
 # Uruchamianie interpretera
 
@@ -588,8 +762,10 @@ def run_interpreter(input_code, base_dir=""):
         tree = parser.prog()
         interpreter = PySQLInterpreter(base_dir)
         interpreter.visit(tree)
-    except Exception as e:
-        print(f"Error: {e}")
+    except PySQLException as e: # Łap bazowy wyjątek PySQL
+        print(e) # __str__ z niestandardowego wyjątku zostanie użyty
+    except Exception as e: # Dla innych, nieprzewidzianych błędów
+        print(f"An unexpected error occurred: {e}")
 
 
 if __name__ == "__main__":

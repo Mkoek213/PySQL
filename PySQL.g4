@@ -105,7 +105,7 @@ CONTINUE: 'continue' ;
 BOOL: 'true' | 'false' ;
 ID: [a-zA-Z_][a-zA-Z_0-9]* ;
 
-INVALID_NUMBER: [0-9]+ [a-zA-Z_]+ {raise Exception("Invalid number format: " + self.text)};
+INVALID_NUMBER: [0-9]+ [a-zA-Z_]+;
 INT: [0-9]+ ;
 FLOAT: [0-9]+'.'[0-9]+ ;
 STRING: '"' ( '\\"' | ~["\n\r] )* '"' ;
