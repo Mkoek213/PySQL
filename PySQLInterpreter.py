@@ -4,11 +4,96 @@ from PySQLLexer import PySQLLexer
 from PySQLParser import PySQLParser
 from PySQLVisitor import PySQLVisitor
 import os
+import difflib
+from antlr4.error.Errors import (
+    LexerNoViableAltException,
+    InputMismatchException,    
+    NoViableAltException,      
+    FailedPredicateException,  
+    RecognitionException       
+)
+
+
+
+def get_closest_match(name, candidates, cutoff=0.6, n=1):
+    """Znajduje najbliższe dopasowania dla 'name' w liście 'candidates'."""
+    matches = difflib.get_close_matches(name, candidates, n=n, cutoff=cutoff)
+    if matches:
+        if len(matches) == 1:
+            return f"Did you mean '{matches[0]}'?"
+        else:
+            return f"Did you mean one of: {', '.join(f'{m}' for m in matches)}?"
+    return None
 
 # Exception to unwind stack on return
 class ReturnException(Exception):
     def __init__(self, value):
         self.value = value
+
+# Dodaj te definicje na początku pliku lub w osobnym module
+class PySQLException(Exception):
+    def __init__(self, message, line=None, column=None, context_text=None, suggestion=None):
+        super().__init__(message)
+        self.message = message
+        self.line = line
+        self.column = column
+        self.context_text = context_text # Tekst tokenu/reguły, która spowodowała błąd
+        self.suggestion = suggestion     # Sugestia (np. "Did you mean 'length'?")
+
+    def __str__(self):
+        error_msg = f"{self.__class__.__name__}: {self.message}"
+        if self.line is not None:
+            error_msg += f" at line {self.line}"
+            if self.column is not None:
+                error_msg += f":{self.column}"
+        if self.context_text:
+            error_msg += f" (near '{self.context_text}')"
+        if self.suggestion:
+            error_msg += f". {self.suggestion}"
+        return error_msg
+
+class PySQLSyntaxError(PySQLException): # Dziedziczy z PySQLException
+    def __str__(self):
+        # Zaczynamy od nazwy klasy i głównego komunikatu
+        error_msg = f"{self.__class__.__name__}: {self.message}"
+
+        # Dodajemy informację o linii, jeśli jest dostępna
+        if self.line is not None:
+            error_msg += f" at line {self.line}"
+        # CELOWO POMIJAMY INFORMACJĘ O KOLUMNIE dla PySQLSyntaxError
+
+        # Dodajemy tekst kontekstowy, jeśli jest dostępny (tak jak w klasie bazowej)
+        if self.context_text:
+            error_msg += f" (near '{self.context_text}')"
+
+        # Dodajemy sugestię, jeśli jest dostępna (tak jak w klasie bazowej)
+        # Zakładamy, że self.suggestion jest atrybutem z klasy bazowej
+        if self.suggestion:
+            error_msg += f". {self.suggestion}"
+            
+        return error_msg
+class PySQLNameError(PySQLException):
+    def __str__(self):
+        error_msg = f"{self.__class__.__name__}: {self.message}"
+        if self.line is not None:
+            error_msg += f" at line {self.line}"
+            if self.column is not None:
+                error_msg += f":{self.column}"
+        
+        # Sprawdź, czy context_text nie jest po prostu powtórzeniem nazwy z message
+        # To jest uproszczone założenie, możesz potrzebować bardziej
+        # zaawansowanej logiki, aby uniknąć redundancji.
+        # Na przykład, jeśli message zawsze zawiera nazwę w cudzysłowach.
+        if self.context_text and self.context_text not in self.message:
+             error_msg += f" (near '{self.context_text}')"
+        
+        if self.suggestion:
+            error_msg += f". {self.suggestion}"
+        return error_msg
+class PySQLTypeError(PySQLException): pass
+class PySQLValueError(PySQLException): pass   # Np. dzielenie przez zero, błędy konwersji
+class PySQLImportError(PySQLException): pass
+class PySQLRuntimeError(PySQLException): pass  # Ogólne błędy wykonania
 
 class PySQLInterpreter(PySQLVisitor):
     def __init__(self, base_dir="", shared_import_context=None):
@@ -304,9 +389,9 @@ class PySQLInterpreter(PySQLVisitor):
             else:
                 raise Exception(f"Unsupported cast to type '{target_type_str}' at line {ctx.start.line}")
 
-        elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() in ('+', '-') and isinstance(ctx.factor(0), PySQLParser.FactorContext):
+        elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() in ('+', '-') and isinstance(ctx.factor(), PySQLParser.FactorContext):
             op = ctx.getChild(0).getText()
-            value = self.visit(ctx.factor(0))
+            value = self.visit(ctx.factor())
             if isinstance(value, bool):
                 raise Exception(f"Unary '{op}' cannot be applied to boolean values at line {ctx.start.line}")
             if isinstance(value, (int, float)):
@@ -327,7 +412,15 @@ class PySQLInterpreter(PySQLVisitor):
                     args.append(self.visit(e_ctx))
             
             if fname not in self.functions:
-                raise Exception(f"Undefined function '{fname}' at line {ctx.start.line}")
+                # TUTAJ: Dodaj logikę sugestii
+                suggestion_text = get_closest_match(fname, self.functions.keys())
+                raise PySQLNameError(
+                    f"Undefined function '{fname}'",
+                    line=ctx.start.line,
+                    column=ctx.start.column,
+                    context_text=fname,
+                    suggestion=suggestion_text
+                )
             
             params, ret_type, body_stmts = self.functions[fname]
 
@@ -373,56 +466,40 @@ class PySQLInterpreter(PySQLVisitor):
                  raise Exception(f"Function '{fname}' defined with return type '{ret_type}' did not return a value. Called at line {current_call_line}")
             return None
 
-        elif ctx.ID():
+        elif ctx.ID(): # Gdy odwołujesz się do zmiennej
             var_name = ctx.ID().getText()
             if var_name not in self.memory:
-                raise Exception(f"Undefined variable '{var_name}' at line {ctx.start.line}")
+                # TUTAJ: Dodaj logikę sugestii
+                suggestion_text = get_closest_match(var_name, self.memory.keys())
+                raise PySQLNameError(
+                    f"Undefined variable '{var_name}'",
+                    line=ctx.start.line,
+                    column=ctx.start.column,
+                    context_text=var_name,
+                    suggestion=suggestion_text
+                )
             return self.memory[var_name]
 
         elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() == 'not':
-            val_to_negate = self.visit(ctx.factor(0))
+            val_to_negate = self.visit(ctx.factor())
             if not isinstance(val_to_negate, bool):
                 raise Exception(f"'not' operator requires a boolean operand, got {self.infer_type(val_to_negate)} at line {ctx.start.line}")
             return not val_to_negate
 
         elif ctx.expr() and ctx.getChildCount() == 3 and \
              ctx.getChild(0).getText() == '(' and \
-             isinstance(ctx.expr(0), PySQLParser.ExprContext) and \
+             isinstance(ctx.expr(), PySQLParser.ExprContext) and \
              ctx.getChild(2).getText() == ')':
-            return self.visit(ctx.expr(0))
+            return self.visit(ctx.expr())
         
         elif ctx.arrayLiteral():
             raise NotImplementedError(f"Array literal handling not fully implemented in visitFactor at line {ctx.start.line}")
 
         elif ctx.selectExpr():
-            return self.visit(ctx.selectExpr(0))
+            return self.visit(ctx.selectExpr())
 
         else:
             raise Exception(f"Invalid or unhandled factor structure near '{ctx.getText()}' at line {ctx.start.line}")
-        
-    
-        if ctx.INT():
-            return int(ctx.INT().getText())
-        elif ctx.FLOAT():
-            return float(ctx.FLOAT().getText())
-        elif ctx.STRING():
-            return ctx.STRING().getText()[1:-1]
-        elif ctx.BOOL():
-            return ctx.BOOL().getText().lower() == 'true'
-        # elif ctx.ID() and not ctx.expr():
-        elif ctx.ID() and ctx.getChildCount() == 1:
-            var_name = ctx.ID().getText()
-            if var_name not in self.memory:
-                raise Exception(f"Undefined variable '{var_name}' at line {ctx.start.line}")
-            return self.memory[var_name]
-        elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() == 'not':
-            return not self.visit(ctx.factor())
-        elif ctx.expr():
-            return self.visit(ctx.expr())
-        elif ctx.selectExpr():
-            return self.visit(ctx.selectExpr())
-        
-        raise Exception(f"Invalid factor at line {ctx.start.line}")
 
     def apply_operator(self, left, op, right, line):
         try:
@@ -527,29 +604,147 @@ class PySQLInterpreter(PySQLVisitor):
 class BreakException(Exception): pass
 class ContinueException(Exception): pass
 
-        
-# Error Handling
-class PySQLErrorListener(ErrorListener):
-    def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e):
-        # Handle lexer errors (token recognition)
-        if "token recognition error" in msg:
-            # Get the raw input text
-            input_stream = recognizer._input
-            text = input_stream.strdata
-            
-            # Look for unclosed quotes
-            quote_count = text.count('"')
-            if quote_count % 2 != 0:
-                # Find first unclosed quote
-                last_quote = text.rfind('"')
-                line_num = text[:last_quote].count('\n') + 1
-                raise Exception(f"Unterminated string literal starting at line {line_num}")
-            
-        raise Exception(f"Syntax error at line {line}:{column} - {msg}")
 
-    def reportError(self, recognizer, offendingSymbol, line, column, msg, e):
-        # Forward to syntaxError for consistency
-        self.syntaxError(recognizer, offendingSymbol, line, column, msg, e)
+
+class PySQLErrorListener(ErrorListener):
+    def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e: RecognitionException):
+        error_message = msg  # Domyślny komunikat ANTLR
+        context_text = None
+        suggestion = None   # Na razie nie implementujemy sugestii dla błędów składniowych
+
+        if offendingSymbol is not None:
+            context_text = offendingSymbol.text
+
+        # --- Obsługa błędów Leksera ---
+        if isinstance(e, LexerNoViableAltException):
+            char_in_error = self._get_char_error_display(e.input, e.startIndex)
+            error_message = f"Unrecognized character or sequence starting with '{char_in_error}'"
+            
+            # Sprawdzenie, czy błąd pochodzi z naszej akcji leksykalnej (np. INVALID_NUMBER)
+            if e.__cause__ is not None:
+                original_exception_message = str(e.__cause__)
+                if "Invalid number format" in original_exception_message:
+                    error_message = original_exception_message
+                    # context_text może być już częścią original_exception_message
+                    # np. "Invalid number format: 123bad"
+                    # Jeśli offendingSymbol.text jest bardziej precyzyjny, można go użyć.
+                    if offendingSymbol is not None: # Dla INVALID_NUMBER, offendingSymbol to cały błędny token
+                         context_text = offendingSymbol.text
+
+
+        # --- Obsługa błędów Parsera ---
+        elif isinstance(e, InputMismatchException):
+            found_token_display = self._get_token_display_name(recognizer, offendingSymbol)
+            expected_desc = self._get_expected_tokens_description(recognizer, recognizer.getExpectedTokens())
+            if offendingSymbol and offendingSymbol.type == Token.EOF:
+                error_message = f"Unexpected end of file; expecting {expected_desc}"
+                context_text = "end of file"
+            else:
+                error_message = f"Unexpected {found_token_display}; expecting {expected_desc}"
+        
+        elif isinstance(e, NoViableAltException):
+            # Ten błąd oznacza, że parser nie mógł dopasować żadnej alternatywy w regule.
+            # offendingSymbol to token, przy którym parser utknął.
+            token_display = self._get_token_display_name(recognizer, offendingSymbol)
+            error_message = f"Invalid or incomplete statement near {token_display}. Cannot determine how to proceed."
+            # Można spróbować uzyskać oczekiwane tokeny, ale dla NoViableAltException może to być mniej precyzyjne.
+            # expected_desc = self._get_expected_tokens_description(recognizer, recognizer.getExpectedTokens())
+            # if expected_desc:
+            #     error_message += f" Were you trying to write {expected_desc}?"
+
+        elif isinstance(e, FailedPredicateException):
+            token_display = self._get_token_display_name(recognizer, offendingSymbol)
+            predicate_text = e.predicate if e.predicate else "a specific condition"
+            # rule_name = recognizer.ruleNames[e.ruleIndex] # Nazwa reguły, w której predykat zawiódł
+            error_message = f"A grammar condition (predicate) was not met near {token_display} (failed: {predicate_text})"
+        
+        # --- Inne lub nieokreślone błędy rozpoznawania ---
+        # Jeśli 'e' nie jest None, ale nie pasuje do powyższych, użyj domyślnego 'msg'.
+        # 'msg' często jest już sformatowane przez ANTLR (np. "missing X", "extraneous Y").
+        # Można tutaj dodać logikę do "oczyszczania" lub upraszczania tych domyślnych wiadomości.
+        elif msg: # Jeśli 'e' jest innego typu lub None, ale 'msg' istnieje
+            error_message = msg # Użyj domyślnego komunikatu
+
+        # Domyślny context_text, jeśli nie został ustawiony przez konkretny handler błędu
+        if context_text is None and offendingSymbol is not None:
+            context_text = offendingSymbol.text
+        elif context_text is None and e is not None and hasattr(e, 'offendingToken') and e.offendingToken is not None:
+            context_text = e.offendingToken.text
+
+
+        raise PySQLSyntaxError(
+            message=error_message,
+            line=line,
+            column=column, # Przekazujemy kolumnę, ale __str__ w PySQLSyntaxError ją pominie
+            context_text=context_text,
+            suggestion=suggestion
+        )
+
+    def _get_char_error_display(self, input_stream: InputStream, start_index: int) -> str:
+        """Pomocnik do wyświetlania znaku, który spowodował błąd leksera."""
+        if input_stream is not None and 0 <= start_index < input_stream.size:
+            char = input_stream.getText(start_index, start_index)
+            if char == '\n': return "\\n"
+            if char == '\r': return "\\r"
+            if char == '\t': return "\\t"
+            if char == str(Token.EOF): return "<EOF>" # Teoretycznie nie powinno tu być EOF
+            return char
+        return "<unknown char>"
+
+    def _get_token_display_name(self, recognizer, token: Token) -> str:
+        """Zwraca czytelną nazwę dla tokenu."""
+        if token is None:
+            return "<no token>"
+        if token.type == Token.EOF:
+            return "<end of file>"
+        # recognizer.vocabulary.getDisplayName(token.type) jest preferowane
+        if hasattr(recognizer, 'vocabulary'):
+            name = recognizer.vocabulary.getDisplayName(token.type)
+            # Jeśli nazwa to literał (np. "'+'"), zwróć go. Jeśli symboliczna (np. "ID"), zwróć tekst tokenu.
+            if name == token.text or (name.startswith("'") and name.endswith("'")):
+                return name 
+            return f"{name} ('{token.text}')" # Np. "ID ('myVar')"
+        return f"token '{token.text}' (type {token.type})"
+
+
+    def _get_expected_tokens_description(self, recognizer, interval_set: IntervalSet) -> str:
+        """Tworzy czytelny opis oczekiwanych tokenów."""
+        if interval_set is None or not hasattr(recognizer, 'vocabulary'):
+            return "a specific token or sequence"
+
+        expected_names = []
+        # Iteracja po elementach IntervalSet (które są typami tokenów)
+        for i in range(interval_set.min_element, interval_set.max_element + 1): # Uproszczona iteracja, IntervalSet może mieć dziury
+            if not interval_set.contains(i):
+                continue
+
+            display_name = recognizer.vocabulary.getDisplayName(i)
+            if i == Token.EOF:
+                # Dodaj EOF tylko jeśli jest to jedno z niewielu oczekiwań
+                if len(interval_set) < 5 : # Arbitralny próg, żeby nie zaśmiecać
+                    expected_names.append("end of file")
+            elif i > 0: # Prawidłowe typy tokenów
+                if display_name.startswith("'") and display_name.endswith("'"):
+                    expected_names.append(display_name)  # np. "'if'", "'+'"
+                else:
+                    # Dla nazw symbolicznych (ID, INT), można je sformatować
+                    # Np. "an identifier", "an integer"
+                    article = "an" if display_name and display_name[0].lower() in "aeiouh" else "a"
+                    expected_names.append(f"{article} {display_name.lower()}")
+        
+        # Usuń duplikaty i ewentualnie posortuj
+        unique_token_names = sorted(list(set(expected_names)))
+        
+        if not unique_token_names:
+            return "a valid statement component"
+        if len(unique_token_names) == 1:
+            return unique_token_names[0]
+        # Ogranicz liczbę wyświetlanych oczekiwanych tokenów, aby nie przytłoczyć użytkownika
+        if len(unique_token_names) > 4:
+             # Weź pierwsze kilka i dodaj "..."
+            return "one of: " + ", ".join(unique_token_names[:3]) + ", or others"
+
+        return "one of: " + ", ".join(unique_token_names[:-1]) + " or " + unique_token_names[-1]
 
 # Uruchamianie interpretera
 
@@ -567,8 +762,10 @@ def run_interpreter(input_code, base_dir=""):
         tree = parser.prog()
         interpreter = PySQLInterpreter(base_dir)
         interpreter.visit(tree)
-    except Exception as e:
-        print(f"Error: {e}")
+    except PySQLException as e: # Łap bazowy wyjątek PySQL
+        print(e) # __str__ z niestandardowego wyjątku zostanie użyty
+    except Exception as e: # Dla innych, nieprzewidzianych błędów
+        print(f"An unexpected error occurred: {e}")
 
 
 if __name__ == "__main__":
