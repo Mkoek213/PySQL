@@ -567,34 +567,60 @@ class PySQLInterpreter(PySQLVisitor):
         raise ContinueException()
 
 
-    def visitLoopStat(self, ctx):
-        if ctx.getChild(0).getText() == 'while':
-            while True:
-                condition = self.visit(ctx.expr())
-                if not isinstance(condition, bool):
-                    raise Exception(f"'while' condition must be boolean at line {ctx.start.line}")
-                if not condition:
-                    break
-                try:
-                    self.visit(ctx.block())
-                except BreakException:
-                    break
-                except ContinueException:
-                    continue
+    def visitWhileLoop(self, ctx):
+        """
+        Ta metoda obsługuje pętlę 'while'.
+        Jest to ta sama logika, która była w Twoim 'if' w visitLoopStat.
+        """
+        while True:
+            condition = self.visit(ctx.expr())
+            if not isinstance(condition, bool):
+                raise Exception(f"'while' condition must be boolean at line {ctx.start.line}")
+            if not condition:
+                break
+            try:
+                self.visit(ctx.block())
+            except BreakException:
+                break
+            except ContinueException:
+                continue
 
-        elif ctx.getChild(0).getText() == 'for':
-            init = ctx.assign(0)
-            cond = ctx.expr()
-            incr = ctx.assign(1)
-            self.visit(init)
-            while self.visit(cond):
-                try:
-                    self.visit(ctx.block())
-                except BreakException:
-                    break
-                except ContinueException:
-                    pass  
-                self.visit(incr)
+    def visitForLoop(self, ctx):
+        """
+        NOWA, elastyczna implementacja pętli 'for' pasująca do nowej gramatyki.
+        """
+        # 1. Inicjalizacja pętli (może być pusta)
+        # Ta linia wywoła visitVarDecl LUB visitExpr (które może wywołać visitAssign)
+        if ctx.forInitializer():
+            self.visit(ctx.forInitializer())
+
+        while True:
+            # 2. Warunek pętli (jeśli pusty, przyjmujemy 'true')
+            condition = True
+            if ctx.expr():
+                condition_val = self.visit(ctx.expr())
+                # Używamy Twojej logiki sprawdzania typu boolean
+                if not isinstance(condition_val, bool):
+                    raise Exception(f"'for' condition must be a boolean at line {ctx.start.line}")
+                condition = condition_val
+            
+            if not condition:
+                break
+
+            # 3. Wykonanie bloku kodu (z obsługą break/continue)
+            try:
+                self.visit(ctx.block())
+            except BreakException:
+                break
+            except ContinueException:
+                # Jeśli wystąpi 'continue', przechodzimy do aktualizacji i kolejnej iteracji
+                if ctx.forUpdate():
+                    self.visit(ctx.forUpdate())
+                continue
+
+            # 4. Aktualizacja zmiennych (może być pusta)
+            if ctx.forUpdate():
+                self.visit(ctx.forUpdate())
     
     def visitBlock(self, ctx):
         for stmt in ctx.stat():

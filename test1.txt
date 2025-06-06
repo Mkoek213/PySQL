@@ -1,15 +1,5 @@
-from "utils.txt" import x, add
 
-print("Main started")
-print(add(2, 3))
-// komentarz pojedynczy
-int z = 6
-/\  komentarz wieloliniowy
-   z = z + 4
-/\
-float y = (float)z
-float h = (float)true
-print(z)
-print(y)
-print(x)
-print(h)
+
+for (int i = 3; i < 5; i = i+1) do {
+   print(i)
+}

@@ -19,7 +19,7 @@ stat:   varDecl
 varDecl: varType ID ('=' expr)? ;
 assign: ID '=' expr ;
 
-expr: logicalExpr;
+expr: assign | logicalExpr;
 
 logicalExpr: comparisonExpr ( ('and' | 'or') comparisonExpr )* ;
 comparisonExpr: addExpr ( ('>' | '<' | '>=' | '<=' | '==' | '!=' ) addExpr )* ;
@@ -57,9 +57,12 @@ printStat: PRINT '(' expr ')' ;
 ifStat: 'if' '(' expr ')' 'then' (stat | printStat) ('else' (stat | printStat))? ;
 
 loopStat
-    : 'for' '(' assign ';' expr ';' assign ')' 'do' block
-    | 'while' '(' expr ')' 'do' block
+    : 'for' '(' forInitializer ';' expr? ';' forUpdate ')' 'do' block # ForLoop
+    | 'while' '(' expr ')' 'do' block                                # WhileLoop
     ;
+
+forInitializer: (varDecl | expr)? ; // Inicjalizator jest opcjonalny i może być deklaracją LUB wyrażeniem
+forUpdate     : expr? ;             // Część aktualizująca jest opcjonalna i jest wyrażeniem
 
 block: '{' stat* '}' ;
 
