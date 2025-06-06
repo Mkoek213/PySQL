@@ -16,8 +16,9 @@ stat:   varDecl
       | importStat 
       ;
 
-varDecl: varType ID ('=' expr)? ;
-assign: ID '=' expr ;
+identifierName: ID | INVALID_NUMBER ;
+varDecl: varType identifierName ('=' expr)? ;
+assign: identifierName '=' expr ;
 
 expr: assign | logicalExpr;
 
@@ -34,11 +35,11 @@ factor:
     | STRING
     | BOOL
     | arrayLiteral
-    | ID '(' exprList? ')'
-    | ID
+    | identifierName '(' exprList? ')'
+    | identifierName
     | 'not' factor
     | '(' expr ')'
-    | ID '[' expr ']'
+    | identifierName '[' expr ']'
     | selectExpr
     ;
 
@@ -74,15 +75,15 @@ importStat
     ;
 
 // Define idList for comma-separated identifiers
-idList: ID (',' ID)* ;
+idList: identifierName (',' identifierName)* ;
 
 
 
 
-funcDef: 'func' ID '(' paramList? ')' '->' returnType 'exec' '(' stat+ ')' ;
+funcDef: 'func' identifierName '(' paramList? ')' '->' returnType 'exec' '(' stat+ ')' ;
 returnStat: 'return' expr? ;
 
-paramList: ID ':' varType (',' ID ':' varType)* ;
+paramList: identifierName ':' varType (',' identifierName ':' varType)* ;
 
 // Dodano typy tablicowe, w tym mieszane
 returnType: varType | 'void' ;

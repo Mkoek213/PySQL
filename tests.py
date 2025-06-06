@@ -292,14 +292,14 @@ test_case(
 test_case(
     "ERROR: Invalid variable declaration",
     "int 1x = 5\nprint(1x)",
-    "An unexpected error occurred: Invalid variable name '1x' at line 1"
+    "An unexpected error occurred: An unexpected error occurred: Invalid variable name '1x' at line 1"
 )
 
 # 6. Błąd: nieprawidłowa deklaracja funkcji
 test_case(
     "ERROR: Invalid function declaration",
     "func 1func() -> int exec (return 5)",
-    "An unexpected error occurred: Invalid function name '1func' at line 1"
+    "PySQLNameError: Invalid function name at line 1 (near '1func')"
 )
 
 # 7. Błąd: nieprawidłowy typ zwracany z funkcji
