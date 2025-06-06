@@ -12,7 +12,7 @@ from antlr4.error.Errors import (
     FailedPredicateException,  
     RecognitionException       
 )
-
+import re
 
 
 def get_closest_match(name, candidates, cutoff=0.6, n=1):
@@ -186,7 +186,7 @@ class PySQLInterpreter(PySQLVisitor):
     def visitSelectiveImport(self, ctx: PySQLParser.SelectiveImportContext): # Parameter type from ANTLR
         path_raw = ctx.STRING().getText()[1:-1] # Get "file.txt"
 
-        items_to_import = [id_node.getText() for id_node in ctx.idList().ID()]
+        items_to_import = [id_node.getText() for id_node in ctx.idList().identifierName()]
 
         module_state = self._get_or_parse_module(path_raw)
 
@@ -214,26 +214,63 @@ class PySQLInterpreter(PySQLVisitor):
         return None
     
     def visitFuncDef(self, ctx):
-        name = ctx.ID().getText()
+        # Ta część pozostaje bez zmian
+        name = ctx.identifierName().getText()
+        line = ctx.start.line
+
+        if not re.match(r'^[a-zA-Z_][a-zA-Z_0-9]*$', name):
+            raise PySQLNameError(
+                message=f"Invalid function name",
+                line=line,
+                context_text=name
+            )
+
         if name in self.functions:
-            raise Exception(f"Function '{name}' already defined at line {ctx.start.line}")
-        # parameters: list of (name, type)
+            raise PySQLNameError(
+                message=f"Function '{name}' already defined",
+                line=line,
+                context_text=name
+            )
+            
         params = []
         if ctx.paramList():
-            ids = ctx.paramList().ID()
-            types = ctx.paramList().varType()
-            for pname_ctx, ptype_ctx in zip(ids, types):
-                params.append((pname_ctx.getText(), ptype_ctx.getText()))
+            # ZMIANA: Zamiast ctx.paramList().ID() używamy ctx.paramList().identifierName()
+            param_names_ctx = ctx.paramList().identifierName()
+            param_types_ctx = ctx.paramList().varType()
+            
+            for pname_ctx, ptype_ctx in zip(param_names_ctx, param_types_ctx):
+                param_name = pname_ctx.getText()
+                
+                # NOWOŚĆ: Walidacja nazwy każdego parametru
+                if not re.match(r'^[a-zA-Z_][a-zA-Z_0-9]*$', param_name):
+                    raise PySQLNameError(
+                        message=f"Invalid parameter name",
+                        line=pname_ctx.start.line,
+                        context_text=param_name
+                    )
+                
+                # Sprawdzenie, czy nazwy parametrów się nie powtarzają
+                if param_name in [p[0] for p in params]:
+                    raise PySQLNameError(
+                        message=f"Duplicate parameter name '{param_name}' in function definition",
+                        line=pname_ctx.start.line,
+                        context_text=param_name
+                    )
+                
+                params.append((param_name, ptype_ctx.getText()))
+                
         ret_type = ctx.returnType().getText()
         body = ctx.stat()
         self.functions[name] = (params, ret_type, body)
+        
         return None
+
 
     def visitReturnStat(self, ctx):
         val = self.visit(ctx.expr()) if ctx.expr() else None
         raise ReturnException(val)
     def visitAssign(self, ctx):
-        var_name = ctx.ID().getText()
+        var_name = ctx.identifierName().getText()
         value = self.visit(ctx.expr())
         line = ctx.start.line
 
@@ -334,17 +371,24 @@ class PySQLInterpreter(PySQLVisitor):
             result = self.apply_operator(result, op, right, ctx.start.line)
         return result
         
+    # Zastąp swoją obecną metodę visitVarDecl tą wersją
     def visitVarDecl(self, ctx):
-        declared_type = ctx.varType().getText()
-        var_name = ctx.ID().getText()
+        # Pobieramy kontekst identyfikatora, aby sprawdzić, z której reguły pochodzi
+        identifier_ctx = ctx.identifierName()
+        var_name = identifier_ctx.getText()
         line = ctx.start.line
 
+        if hasattr(identifier_ctx, 'INVALID_NUMBER') and identifier_ctx.INVALID_NUMBER():
+            raise Exception(f"An unexpected error occurred: Invalid variable name '{var_name}' at line {line}")
+
+        # Reszta kodu pozostaje bez zmian
         if var_name in self.var_types:
             orig_line = self.var_types[var_name][1]
             raise Exception(f"Redeclaration of variable '{var_name}' at line {line}, originally declared at line {orig_line}")
 
         value = self.visit(ctx.expr()) if ctx.expr() else None
         if value is not None:
+            declared_type = ctx.varType().getText()
             inferred_type = self.infer_type(value)
 
             # Implicit promotion from int to float
@@ -354,6 +398,9 @@ class PySQLInterpreter(PySQLVisitor):
 
             if not self.type_matches(declared_type, inferred_type): # type_matches already allows int for float
                 raise Exception(f"Type mismatch in declaration of '{var_name}' at line {line}: expected {declared_type}, got {inferred_type}")
+
+        else: # Jeśli nie ma wartości początkowej
+            declared_type = ctx.varType().getText()
 
         self.memory[var_name] = value
         self.var_types[var_name] = (declared_type, line)
@@ -404,8 +451,8 @@ class PySQLInterpreter(PySQLVisitor):
         elif ctx.STRING(): return ctx.STRING().getText()[1:-1]
         elif ctx.BOOL(): return ctx.BOOL().getText().lower() == 'true'
 
-        elif ctx.ID() and ctx.getChild(1) and ctx.getChild(1).getText() == '(':
-            fname = ctx.ID().getText()
+        elif ctx.identifierName() and ctx.getChild(1) and ctx.getChild(1).getText() == '(':
+            fname = ctx.identifierName().getText()
             args = []
             if ctx.exprList():
                 for e_ctx in ctx.exprList().expr():
@@ -466,8 +513,8 @@ class PySQLInterpreter(PySQLVisitor):
                  raise Exception(f"Function '{fname}' defined with return type '{ret_type}' did not return a value. Called at line {current_call_line}")
             return None
 
-        elif ctx.ID(): # Gdy odwołujesz się do zmiennej
-            var_name = ctx.ID().getText()
+        elif ctx.identifierName(): # Gdy odwołujesz się do zmiennej
+            var_name = ctx.identifierName().getText()
             if var_name not in self.memory:
                 # TUTAJ: Dodaj logikę sugestii
                 suggestion_text = get_closest_match(var_name, self.memory.keys())
@@ -567,34 +614,60 @@ class PySQLInterpreter(PySQLVisitor):
         raise ContinueException()
 
 
-    def visitLoopStat(self, ctx):
-        if ctx.getChild(0).getText() == 'while':
-            while True:
-                condition = self.visit(ctx.expr())
-                if not isinstance(condition, bool):
-                    raise Exception(f"'while' condition must be boolean at line {ctx.start.line}")
-                if not condition:
-                    break
-                try:
-                    self.visit(ctx.block())
-                except BreakException:
-                    break
-                except ContinueException:
-                    continue
+    def visitWhileLoop(self, ctx):
+        """
+        Ta metoda obsługuje pętlę 'while'.
+        Jest to ta sama logika, która była w Twoim 'if' w visitLoopStat.
+        """
+        while True:
+            condition = self.visit(ctx.expr())
+            if not isinstance(condition, bool):
+                raise Exception(f"'while' condition must be boolean at line {ctx.start.line}")
+            if not condition:
+                break
+            try:
+                self.visit(ctx.block())
+            except BreakException:
+                break
+            except ContinueException:
+                continue
 
-        elif ctx.getChild(0).getText() == 'for':
-            init = ctx.assign(0)
-            cond = ctx.expr()
-            incr = ctx.assign(1)
-            self.visit(init)
-            while self.visit(cond):
-                try:
-                    self.visit(ctx.block())
-                except BreakException:
-                    break
-                except ContinueException:
-                    pass  
-                self.visit(incr)
+    def visitForLoop(self, ctx):
+        """
+        NOWA, elastyczna implementacja pętli 'for' pasująca do nowej gramatyki.
+        """
+        # 1. Inicjalizacja pętli (może być pusta)
+        # Ta linia wywoła visitVarDecl LUB visitExpr (które może wywołać visitAssign)
+        if ctx.forInitializer():
+            self.visit(ctx.forInitializer())
+
+        while True:
+            # 2. Warunek pętli (jeśli pusty, przyjmujemy 'true')
+            condition = True
+            if ctx.expr():
+                condition_val = self.visit(ctx.expr())
+                # Używamy Twojej logiki sprawdzania typu boolean
+                if not isinstance(condition_val, bool):
+                    raise Exception(f"'for' condition must be a boolean at line {ctx.start.line}")
+                condition = condition_val
+            
+            if not condition:
+                break
+
+            # 3. Wykonanie bloku kodu (z obsługą break/continue)
+            try:
+                self.visit(ctx.block())
+            except BreakException:
+                break
+            except ContinueException:
+                # Jeśli wystąpi 'continue', przechodzimy do aktualizacji i kolejnej iteracji
+                if ctx.forUpdate():
+                    self.visit(ctx.forUpdate())
+                continue
+
+            # 4. Aktualizacja zmiennych (może być pusta)
+            if ctx.forUpdate():
+                self.visit(ctx.forUpdate())
     
     def visitBlock(self, ctx):
         for stmt in ctx.stat():

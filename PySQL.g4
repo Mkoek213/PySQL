@@ -16,10 +16,11 @@ stat:   varDecl
       | importStat 
       ;
 
-varDecl: varType ID ('=' expr)? ;
-assign: ID '=' expr ;
+identifierName: ID | INVALID_NUMBER ;
+varDecl: varType identifierName ('=' expr)? ;
+assign: identifierName '=' expr ;
 
-expr: logicalExpr;
+expr: assign | logicalExpr;
 
 logicalExpr: comparisonExpr ( ('and' | 'or') comparisonExpr )* ;
 comparisonExpr: addExpr ( ('>' | '<' | '>=' | '<=' | '==' | '!=' ) addExpr )* ;
@@ -34,11 +35,11 @@ factor:
     | STRING
     | BOOL
     | arrayLiteral
-    | ID '(' exprList? ')'
-    | ID
+    | identifierName '(' exprList? ')'
+    | identifierName
     | 'not' factor
     | '(' expr ')'
-    | ID '[' expr ']'
+    | identifierName '[' expr ']'
     | selectExpr
     ;
 
@@ -57,9 +58,12 @@ printStat: PRINT '(' expr ')' ;
 ifStat: 'if' '(' expr ')' 'then' (stat | printStat) ('else' (stat | printStat))? ;
 
 loopStat
-    : 'for' '(' assign ';' expr ';' assign ')' 'do' block
-    | 'while' '(' expr ')' 'do' block
+    : 'for' '(' forInitializer ';' expr? ';' forUpdate ')' 'do' block # ForLoop
+    | 'while' '(' expr ')' 'do' block                                # WhileLoop
     ;
+
+forInitializer: (varDecl | expr)? ; // Inicjalizator jest opcjonalny i może być deklaracją LUB wyrażeniem
+forUpdate     : expr? ;             // Część aktualizująca jest opcjonalna i jest wyrażeniem
 
 block: '{' stat* '}' ;
 
@@ -71,15 +75,15 @@ importStat
     ;
 
 // Define idList for comma-separated identifiers
-idList: ID (',' ID)* ;
+idList: identifierName (',' identifierName)* ;
 
 
 
 
-funcDef: 'func' ID '(' paramList? ')' '->' returnType 'exec' '(' stat+ ')' ;
+funcDef: 'func' identifierName '(' paramList? ')' '->' returnType 'exec' '(' stat+ ')' ;
 returnStat: 'return' expr? ;
 
-paramList: ID ':' varType (',' ID ':' varType)* ;
+paramList: identifierName ':' varType (',' identifierName ':' varType)* ;
 
 // Dodano typy tablicowe, w tym mieszane
 returnType: varType | 'void' ;

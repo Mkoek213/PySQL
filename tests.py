@@ -26,7 +26,7 @@ test_case(
 test_case(
     "Błąd: przypisanie złego typu (int → string)",
     "int x = 5\nx = \"hello\"\nprint(x)",
-    "Error: Type mismatch on assignment to 'x' at line 2. Declared as int at line 1, assigned value of type string"
+    "An unexpected error occurred: Type mismatch on assignment to 'x' at line 2. Declared as int at line 1, assigned value of type string"
 )
 
 # -------------------------------
@@ -50,7 +50,7 @@ test_case(
 test_case(
     "Błąd: redeklaracja zmiennej",
     "int x = 5\nint x = 10\nprint(x)",
-    "Error: Redeclaration of variable 'x' at line 2, originally declared at line 1"
+    "An unexpected error occurred: Redeclaration of variable 'x' at line 2, originally declared at line 1"
 )
 
 # -------------------------------
@@ -111,7 +111,7 @@ test_case(
 test_case(
     "IF: Non-boolean condition error",
     "if (5) then print(\"FAIL\")",
-    "Error: Condition must be a boolean, got <class 'int'> at line 1"
+    "An unexpected error occurred: Condition must be a boolean, got <class 'int'> at line 1"
 )
 
 # ================== FUNCTION TESTS ==================
@@ -144,7 +144,7 @@ test_case(
     return 2.5
 )
 print(floatFunc())""",
-    "Error: Function 'floatFunc' should return int, got float at line 4"
+    "An unexpected error occurred: Function 'floatFunc' should return int, got float. Called at line 4"
 )
 
 # 4. Wrong argument count
@@ -154,7 +154,7 @@ test_case(
     return a * 2
 )
 print(foo(1,2))""",
-    "Error: Function 'foo' expects 1 args, got 2 at line 4"
+    "An unexpected error occurred: Function 'foo' expects 1 args, got 2 at line 4"
 )
 
 # 5. Recursive function (factorial)
@@ -265,3 +265,73 @@ test_case(
 )
 
 
+# ================== ERROR HANDLING TESTS ==================
+
+# 1. Błąd: niezdefiniowana zmienna
+test_case(
+    "ERROR: Undefined variable",
+    "print(x)",
+    "PySQLNameError: Undefined variable 'x' at line 1:6"
+)
+
+# 2. Błąd: dzielenie przez zero
+test_case(
+    "ERROR: Division by zero",
+    "print(5 / 0)",
+    "An unexpected error occurred: Division by zero at line 1"
+)
+
+# 4. Błąd: nieprawidłowy typ w operacji
+test_case(
+    "ERROR: Type error in operation",
+    "print(5 + \"hello\")",
+    "An unexpected error occurred: Incompatible types for '+' at line 1"
+)
+
+# 5. Błąd: nieprawidłowa deklaracja zmiennej
+test_case(
+    "ERROR: Invalid variable declaration",
+    "int 1x = 5\nprint(1x)",
+    "An unexpected error occurred: An unexpected error occurred: Invalid variable name '1x' at line 1"
+)
+
+# 6. Błąd: nieprawidłowa deklaracja funkcji
+test_case(
+    "ERROR: Invalid function declaration",
+    "func 1func() -> int exec (return 5)",
+    "PySQLNameError: Invalid function name at line 1 (near '1func')"
+)
+
+# 7. Błąd: nieprawidłowy typ zwracany z funkcji
+test_case(
+    "ERROR: Invalid return type from function",
+    """func invalidReturn() -> int exec (
+    return true
+)
+print(invalidReturn())""",
+    "An unexpected error occurred: Function 'invalidReturn' should return int, got bool. Called at line 4"
+)
+
+# 8. Błąd: nieprawidłowa liczba argumentów w funkcji
+test_case(
+    "ERROR: Invalid number of arguments in function call",
+    """func add(a:int) -> int exec (
+    return a + 1
+)
+print(add(5, 10))""",
+    "An unexpected error occurred: Function 'add' expects 1 args, got 2 at line 4"
+)
+
+# 9. Błąd: nieprawidłowa składnia w pętli
+test_case(
+    "ERROR: Syntax error in loop",
+    "for (i = 0; i < 5; i = i + 1) print(i)",
+    "PySQLSyntaxError: Unexpected token 'print' (type 44); expecting a specific token or sequence at line 1 (near 'print')"
+)
+
+# 10. Błąd: nieprawidłowa składnia w warunku if
+test_case(
+    "ERROR: Syntax error in if condition",
+    "if (true) print(\"OK\")",
+    "PySQLSyntaxError: missing 'then' at 'print' at line 1 (near 'print')"
+)
