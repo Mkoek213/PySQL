@@ -264,7 +264,73 @@ class PySQLInterpreter(PySQLVisitor):
         self.functions[name] = (params, ret_type, body)
         
         return None
-
+    def visitSelectExpr(self, ctx):
+        # Extract the source array
+        source_ctx = ctx.expr(1)  # The expression after FROM
+        source = self.visit(source_ctx)
+        
+        # Validate source is an array
+        if not isinstance(source, list):
+            raise PySQLTypeError(
+                "SELECT source must be an array",
+                line=source_ctx.start.line,
+                context_text=str(source)
+            )
+        
+        # Process each element
+        results = []
+        for element in source:
+            # Save current state of '_'
+            saved_underscore = self.memory.get('_', None)
+            saved_underscore_type = self.var_types.get('_', None)
+            
+            # Set '_' to current element
+            self.memory['_'] = element
+            self.var_types['_'] = (self.infer_type(element), ctx.start.line)
+            
+            try:
+                # Apply WHERE clause if exists
+                if ctx.WHERE():
+                    condition_ctx = ctx.expr(2)  # Expression after WHERE
+                    condition = self.visit(condition_ctx)
+                    
+                    if not isinstance(condition, bool):
+                        raise PySQLTypeError(
+                            "WHERE clause must return boolean",
+                            line=condition_ctx.start.line,
+                            context_text=str(condition))
+                    
+                    if not condition:
+                        continue
+                
+                # Apply SELECT projection
+                projection_ctx = ctx.expr(0)  # Expression after SELECT
+                result = self.visit(projection_ctx)
+                results.append(result)
+                
+            finally:
+                # Restore '_' to previous state
+                if saved_underscore is not None:
+                    self.memory['_'] = saved_underscore
+                    self.var_types['_'] = saved_underscore_type
+                else:
+                    if '_' in self.memory:
+                        del self.memory['_']
+                    if '_' in self.var_types:
+                        del self.var_types['_']
+        
+        # Apply ORDER BY if specified
+        if ctx.ORDER():
+            order_direction = ctx.DESC() is not None  # True for DESC, False for ASC
+            try:
+                results.sort(reverse=order_direction)
+            except TypeError:
+                raise PySQLTypeError(
+                    "Cannot sort mixed-type arrays",
+                    line=ctx.start.line,
+                    context_text=str(results))
+        
+        return results
 
     def visitReturnStat(self, ctx):
         val = self.visit(ctx.expr()) if ctx.expr() else None
@@ -297,20 +363,52 @@ class PySQLInterpreter(PySQLVisitor):
         return value
     
     def infer_type(self, value):
+        if isinstance(value, list):
+            if not value:  # empty array
+                return 'array<mixed>'
+            
+            elem_types = {self.infer_type(elem) for elem in value}
+            
+            # Handle numeric promotion
+            if elem_types.issubset({'int', 'float'}):
+                if 'float' in elem_types:
+                    return 'array<float>'
+                return 'array<int>'
+            elif len(elem_types) == 1:
+                return f'array<{next(iter(elem_types))}>'
+            else:
+                return 'array<mixed>'
         if isinstance(value, bool): return 'bool'
         if isinstance(value, int): return 'int'
         if isinstance(value, float): return 'float'
         if isinstance(value, str): return 'string'
+        
         return 'unknown'
 
     def type_matches(self, declared, actual):
+        
         if declared == actual:
             return True
         if declared == 'float' and actual == 'int':
             return True
+        if declared == 'mixed' or actual == 'mixed':
+            return True
+            
+        if declared.startswith('array<') and actual.startswith('array<'):
+            declared_elem = declared[6:-1]
+            actual_elem = actual[6:-1]
+            
+            if declared_elem == 'mixed' or actual_elem == 'mixed':
+                return True
+            if declared_elem == 'float' and actual_elem == 'int':
+                return True
+            return declared_elem == actual_elem
+            
         return False
 
-
+    def visitArrayLiteral(self, ctx):
+        elements = [self.visit(expr) for expr in ctx.expr()] if ctx.expr() else []
+        return elements
     
     def visitLogicalExpr(self, ctx):
         left = self.visit(ctx.comparisonExpr(0))
@@ -371,9 +469,7 @@ class PySQLInterpreter(PySQLVisitor):
             result = self.apply_operator(result, op, right, ctx.start.line)
         return result
         
-    # Zastąp swoją obecną metodę visitVarDecl tą wersją
     def visitVarDecl(self, ctx):
-        # Pobieramy kontekst identyfikatora, aby sprawdzić, z której reguły pochodzi
         identifier_ctx = ctx.identifierName()
         var_name = identifier_ctx.getText()
         line = ctx.start.line
@@ -390,6 +486,15 @@ class PySQLInterpreter(PySQLVisitor):
         if value is not None:
             declared_type = ctx.varType().getText()
             inferred_type = self.infer_type(value)
+            
+            if declared_type.startswith('array<') and inferred_type.startswith('array<'):
+                decl_elem = declared_type[6:-1]
+                inf_elem = inferred_type[6:-1]
+                
+                # Numeric promotion in arrays
+                if decl_elem == 'float' and inf_elem == 'int':
+                    value = [float(x) if isinstance(x, int) else x for x in value]
+                    inferred_type = 'array<float>'
 
             # Implicit promotion from int to float
             if declared_type == 'float' and inferred_type == 'int':
@@ -408,6 +513,46 @@ class PySQLInterpreter(PySQLVisitor):
 
 
     def visitFactor(self, ctx: PySQLParser.FactorContext):
+        if ctx.getChildCount() == 4 and ctx.getChild(1).getText() == '[' and ctx.getChild(3).getText() == ']':
+            # Get the array name
+            array_name = ctx.getChild(0).getText()
+            
+            # Get the index expression - CORRECTED: visit the expression child directly
+            index_expr_ctx = ctx.getChild(2)
+            index_val = self.visit(index_expr_ctx)
+            
+            if array_name not in self.memory:
+                suggestion = get_closest_match(array_name, self.memory.keys())
+                raise PySQLNameError(
+                    f"Undefined array '{array_name}'",
+                    line=ctx.start.line,
+                    context_text=array_name,
+                    suggestion=suggestion
+                )
+                
+            arr = self.memory[array_name]
+            if not isinstance(arr, list):
+                raise PySQLTypeError(
+                    f"Variable '{array_name}' is not an array",
+                    line=ctx.start.line,
+                    context_text=array_name
+                )
+                
+            if not isinstance(index_val, int):
+                raise PySQLTypeError(
+                    "Array index must be an integer",
+                    line=index_expr_ctx.start.line,
+                    context_text=str(index_val)
+                )
+                
+            try:
+                return arr[index_val]
+            except IndexError:
+                raise PySQLValueError(
+                    f"Array index out of bounds: {index_val}",
+                    line=index_expr_ctx.start.line,
+                    context_text=str(index_val))
+    
         if ctx.getChildCount() == 4 and \
            ctx.getChild(0).getText() == '(' and \
            isinstance(ctx.getChild(1), PySQLParser.VarTypeContext) and \
@@ -459,7 +604,6 @@ class PySQLInterpreter(PySQLVisitor):
                     args.append(self.visit(e_ctx))
             
             if fname not in self.functions:
-                # TUTAJ: Dodaj logikę sugestii
                 suggestion_text = get_closest_match(fname, self.functions.keys())
                 raise PySQLNameError(
                     f"Undefined function '{fname}'",
@@ -513,10 +657,9 @@ class PySQLInterpreter(PySQLVisitor):
                  raise Exception(f"Function '{fname}' defined with return type '{ret_type}' did not return a value. Called at line {current_call_line}")
             return None
 
-        elif ctx.identifierName(): # Gdy odwołujesz się do zmiennej
+        elif ctx.identifierName():
             var_name = ctx.identifierName().getText()
             if var_name not in self.memory:
-                # TUTAJ: Dodaj logikę sugestii
                 suggestion_text = get_closest_match(var_name, self.memory.keys())
                 raise PySQLNameError(
                     f"Undefined variable '{var_name}'",
@@ -540,7 +683,7 @@ class PySQLInterpreter(PySQLVisitor):
             return self.visit(ctx.expr())
         
         elif ctx.arrayLiteral():
-            raise NotImplementedError(f"Array literal handling not fully implemented in visitFactor at line {ctx.start.line}")
+            return self.visit(ctx.arrayLiteral())
 
         elif ctx.selectExpr():
             return self.visit(ctx.selectExpr())
@@ -786,22 +929,18 @@ class PySQLErrorListener(ErrorListener):
             return "a specific token or sequence"
 
         expected_names = []
-        # Iteracja po elementach IntervalSet (które są typami tokenów)
-        for i in range(interval_set.min_element, interval_set.max_element + 1): # Uproszczona iteracja, IntervalSet może mieć dziury
+        for i in range(interval_set.min_element, interval_set.max_element + 1):
             if not interval_set.contains(i):
                 continue
 
             display_name = recognizer.vocabulary.getDisplayName(i)
             if i == Token.EOF:
-                # Dodaj EOF tylko jeśli jest to jedno z niewielu oczekiwań
-                if len(interval_set) < 5 : # Arbitralny próg, żeby nie zaśmiecać
+                if len(interval_set) < 5 :
                     expected_names.append("end of file")
-            elif i > 0: # Prawidłowe typy tokenów
+            elif i > 0:
                 if display_name.startswith("'") and display_name.endswith("'"):
                     expected_names.append(display_name)  # np. "'if'", "'+'"
                 else:
-                    # Dla nazw symbolicznych (ID, INT), można je sformatować
-                    # Np. "an identifier", "an integer"
                     article = "an" if display_name and display_name[0].lower() in "aeiouh" else "a"
                     expected_names.append(f"{article} {display_name.lower()}")
         
