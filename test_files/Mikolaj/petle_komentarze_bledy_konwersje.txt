@@ -1,0 +1,39 @@
+from "utils.txt" import add, divide //importowanie
+
+print("-----------------------------------")
+print("Petle:")
+for (int i = 3; i <= 5; i = i+1) do { //petle for
+   print(i)
+}
+
+int j = 0
+while (j < 5) do { //petle while
+   print(j)
+   j = j + 1
+}
+print("-----------------------------------")
+
+print("-----------------------------------")
+print("Konwersja typów:") //konwersja typów
+print("Konwersja int na float:")
+print((float)j)
+print("Konwersja bool na int:")
+print((int)(j > 2))
+print("-----------------------------------")
+
+
+print("-----------------------------------")
+print("Funkcje:")
+print(add(3, 4)) //funkcje
+print("-----------------------------------")
+
+/\
+komentarz blokowy
+dalsza czesc komentarza
+/\
+
+// Bledy:
+//print(k) //brak deklaracji zmiennej k
+//print(3 + "4") //nie mozna dodac liczby i stringa
+//int j = 7 //redeklaracja zmiennej j
+//print("Test) //niezamkniety nawias
