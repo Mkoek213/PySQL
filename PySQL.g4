@@ -1,3 +1,4 @@
+
 grammar PySQL;
 
 prog: (stat NEWLINE?)+ ;
@@ -10,17 +11,21 @@ stat:   varDecl
       | ifStat
       | loopStat
       | funcDef
-      | returnStat // new
+      | returnStat
       | breakStat
       | continueStat
-      | importStat 
+      | importStat
       ;
 
 identifierName: ID | INVALID_NUMBER ;
 varDecl: varType identifierName ('=' expr)? ;
-assign: identifierName '=' expr ;
+assign: (identifierName | arrayIndex) '=' expr ;
+arrayIndex: identifierName '[' expr ']' ;
 
-expr: assign | logicalExpr;
+expr:   selectExpr
+    |   assign
+    |   logicalExpr
+    ;
 
 logicalExpr: comparisonExpr ( ('and' | 'or') comparisonExpr )* ;
 comparisonExpr: addExpr ( ('>' | '<' | '>=' | '<=' | '==' | '!=' ) addExpr )* ;
@@ -40,13 +45,16 @@ factor:
     | 'not' factor
     | '(' expr ')'
     | identifierName '[' expr ']'
-    | selectExpr
     ;
 
 
 exprList: expr (',' expr)* ;
 
-selectExpr: SELECT expr FROM expr (WHERE expr)? (ORDER BY (ASC | DESC))? ;
+selectExpr:
+    SELECT projection=expr FROM source=expr
+    (WHERE condition=expr)?
+    (ORDER BY (ASC | DESC))?
+    ;
 
 // Nowy literał tablicowy
 arrayLiteral: '[' (expr (',' expr)*)? ']' ;
@@ -76,9 +84,6 @@ importStat
 
 // Define idList for comma-separated identifiers
 idList: identifierName (',' identifierName)* ;
-
-
-
 
 funcDef: 'func' identifierName '(' paramList? ')' '->' returnType 'exec' '(' stat+ ')' ;
 returnStat: 'return' expr? ;
