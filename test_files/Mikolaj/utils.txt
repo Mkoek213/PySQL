@@ -1,0 +1,7 @@
+func add(a: int, b: int) -> int exec(
+    return a + b
+)
+
+func divide(a: float, b: float) -> float exec (
+    return a / b
+)
