@@ -100,7 +100,26 @@ class PySQLInterpreter(PySQLVisitor):
         self.memory = {}
         self.var_types = {}
         self.functions = {}
-        self.base_dir = base_dir 
+        self.base_dir = base_dir
+        self.functions = {
+            # String functions
+            'toUpper': ([('s', 'string')], 'string', self.builtin_toUpper),
+            'toLower': ([('s', 'string')], 'string', self.builtin_toLower),
+            'startsWith': ([('s', 'string'), ('prefix', 'string')], 'bool', self.builtin_startsWith),
+            'endsWith': ([('s', 'string'), ('suffix', 'string')], 'bool', self.builtin_endsWith),
+            'contains': ([('s', 'string'), ('substring', 'string')], 'bool', self.builtin_contains),
+            
+            # Numerical aggregations
+            'sum': ([('arr', 'array<mixed>')], 'mixed', self.builtin_sum),
+            'avg': ([('arr', 'array<mixed>')], 'float', self.builtin_avg),
+            'min': ([('arr', 'array<mixed>')], 'mixed', self.builtin_min),
+            'max': ([('arr', 'array<mixed>')], 'mixed', self.builtin_max),
+            'count': ([('arr', 'array<mixed>')], 'int', self.builtin_count),
+            'median': ([('arr', 'array<mixed>')], 'float', self.builtin_median),
+            
+            # Array functions
+            'length': ([('arr', 'array<mixed>')], 'int', self.builtin_length),
+        }
 
         if shared_import_context is None:
             self.shared_import_context = {
@@ -264,12 +283,11 @@ class PySQLInterpreter(PySQLVisitor):
         self.functions[name] = (params, ret_type, body)
         
         return None
+        
     def visitSelectExpr(self, ctx):
-        # Extract the source array
-        source_ctx = ctx.expr(1)  # The expression after FROM
+        source_ctx = ctx.expr(1)
         source = self.visit(source_ctx)
         
-        # Validate source is an array
         if not isinstance(source, list):
             raise PySQLTypeError(
                 "SELECT source must be an array",
@@ -277,21 +295,17 @@ class PySQLInterpreter(PySQLVisitor):
                 context_text=str(source)
             )
         
-        # Process each element
         results = []
         for element in source:
-            # Save current state of '_'
             saved_underscore = self.memory.get('_', None)
             saved_underscore_type = self.var_types.get('_', None)
             
-            # Set '_' to current element
             self.memory['_'] = element
             self.var_types['_'] = (self.infer_type(element), ctx.start.line)
             
             try:
-                # Apply WHERE clause if exists
                 if ctx.WHERE():
-                    condition_ctx = ctx.expr(2)  # Expression after WHERE
+                    condition_ctx = ctx.expr(2)
                     condition = self.visit(condition_ctx)
                     
                     if not isinstance(condition, bool):
@@ -303,13 +317,11 @@ class PySQLInterpreter(PySQLVisitor):
                     if not condition:
                         continue
                 
-                # Apply SELECT projection
-                projection_ctx = ctx.expr(0)  # Expression after SELECT
+                projection_ctx = ctx.expr(0)
                 result = self.visit(projection_ctx)
                 results.append(result)
                 
             finally:
-                # Restore '_' to previous state
                 if saved_underscore is not None:
                     self.memory['_'] = saved_underscore
                     self.var_types['_'] = saved_underscore_type
@@ -319,9 +331,8 @@ class PySQLInterpreter(PySQLVisitor):
                     if '_' in self.var_types:
                         del self.var_types['_']
         
-        # Apply ORDER BY if specified
         if ctx.ORDER():
-            order_direction = ctx.DESC() is not None  # True for DESC, False for ASC
+            order_direction = ctx.DESC() is not None
             try:
                 results.sort(reverse=order_direction)
             except TypeError:
@@ -335,41 +346,61 @@ class PySQLInterpreter(PySQLVisitor):
     def visitReturnStat(self, ctx):
         val = self.visit(ctx.expr()) if ctx.expr() else None
         raise ReturnException(val)
+        
     def visitAssign(self, ctx):
-        var_name = ctx.identifierName().getText()
-        value = self.visit(ctx.expr())
-        line = ctx.start.line
-
-        if value is None: # Should not happen if expr always yields a value
-            raise Exception(f"Invalid value assigned to '{var_name}' at line {line}")
-
-        value_type = self.infer_type(value)
-
-        if var_name in self.var_types:
-            declared_type, decl_line = self.var_types[var_name]
-
-            # Implicit promotion from int to float
-            if declared_type == 'float' and value_type == 'int':
-                value = float(value)
-                value_type = 'float' # Update value_type after promotion
-
-            if not self.type_matches(declared_type, value_type):
-                raise Exception(f"Type mismatch on assignment to '{var_name}' at line {line}. Declared as {declared_type} at line {decl_line}, assigned value of type {value_type}")
+        if ctx.arrayIndex():
+            # Handle array index assignment
+            arr, index = self.visit(ctx.arrayIndex())
+            value = self.visit(ctx.expr())
+            
+            # Type checking
+            if isinstance(arr, list) and arr:
+                elem_type = self.infer_type(arr[0])
+                value_type = self.infer_type(value)
+                
+                if elem_type == 'float' and value_type == 'int':
+                    value = float(value)
+                elif not self.type_matches(elem_type, value_type):
+                    raise PySQLTypeError(
+                        f"Type mismatch: array contains {elem_type}, assigned value is {value_type}",
+                        line=ctx.start.line,
+                        context_text=str(value)
+                    )
+            
+            arr[index] = value
+            return value
         else:
-            # Variable not declared, infer its type from this first assignment
-            self.var_types[var_name] = (value_type, line)
+            var_name = ctx.identifierName().getText()
+            value = self.visit(ctx.expr())
+            line = ctx.start.line
 
-        self.memory[var_name] = value
-        return value
+            if value is None:
+                raise Exception(f"Invalid value assigned to '{var_name}' at line {line}")
+
+            value_type = self.infer_type(value)
+
+            if var_name in self.var_types:
+                declared_type, decl_line = self.var_types[var_name]
+
+                if declared_type == 'float' and value_type == 'int':
+                    value = float(value)
+                    value_type = 'float'
+
+                if not self.type_matches(declared_type, value_type):
+                    raise Exception(f"Type mismatch on assignment to '{var_name}' at line {line}. Declared as {declared_type} at line {decl_line}, assigned value of type {value_type}")
+            else:
+                self.var_types[var_name] = (value_type, line)
+
+            self.memory[var_name] = value
+            return value
     
     def infer_type(self, value):
         if isinstance(value, list):
-            if not value:  # empty array
+            if not value:
                 return 'array<mixed>'
             
             elem_types = {self.infer_type(elem) for elem in value}
             
-            # Handle numeric promotion
             if elem_types.issubset({'int', 'float'}):
                 if 'float' in elem_types:
                     return 'array<float>'
@@ -410,13 +441,50 @@ class PySQLInterpreter(PySQLVisitor):
         elements = [self.visit(expr) for expr in ctx.expr()] if ctx.expr() else []
         return elements
     
+    def visitArrayIndex(self, ctx):
+        array_name = ctx.identifierName().getText()
+        index_expr = ctx.expr()
+        index_val = self.visit(index_expr)
+        
+        if array_name not in self.memory:
+            suggestion = get_closest_match(array_name, self.memory.keys())
+            raise PySQLNameError(
+                f"Undefined array '{array_name}'",
+                line=ctx.start.line,
+                context_text=array_name,
+                suggestion=suggestion
+            )
+            
+        arr = self.memory[array_name]
+        if not isinstance(arr, list):
+            raise PySQLTypeError(
+                f"Variable '{array_name}' is not an array",
+                line=ctx.start.line,
+                context_text=array_name
+            )
+            
+        if not isinstance(index_val, int):
+            raise PySQLTypeError(
+                "Array index must be an integer",
+                line=index_expr.start.line,
+                context_text=str(index_val)
+            )
+            
+        if index_val < 0 or index_val >= len(arr):
+            raise PySQLValueError(
+                f"Array index out of bounds: {index_val}",
+                line=index_expr.start.line,
+                context_text=str(index_val)
+            )
+        
+        return arr, index_val
+    
     def visitLogicalExpr(self, ctx):
         left = self.visit(ctx.comparisonExpr(0))
         for i in range(1, len(ctx.comparisonExpr())):
             op = ctx.getChild(2*i-1).getText()
             right = self.visit(ctx.comparisonExpr(i))
             
-            # Dodaj walidację: tylko bool and bool
             if not isinstance(left, bool) or not isinstance(right, bool):
                 raise Exception(f"Logical operator '{op}' requires boolean operands at line {ctx.start.line}")
             
@@ -434,14 +502,12 @@ class PySQLInterpreter(PySQLVisitor):
             right = self.visit(ctx.addExpr(1))
             
             if op in ['==', '!=']:
-                # Tylko porównywalne typy (int/float) lub ten sam typ
                 if type(left) != type(right):
                     if isinstance(left, (int, float)) and isinstance(right, (int, float)):
-                        pass  # OK: float vs int
+                        pass
                     else:
                         raise Exception(f"Incompatible types for comparison '{op}' at line {ctx.start.line}")
             else:
-                # Other operators require numeric types
                 if not (isinstance(left, (int, float)) and isinstance(right, (int, float))):
                     raise Exception(f"Operator '{op}' requires numeric operands at line {ctx.start.line}")
             
@@ -477,7 +543,6 @@ class PySQLInterpreter(PySQLVisitor):
         if hasattr(identifier_ctx, 'INVALID_NUMBER') and identifier_ctx.INVALID_NUMBER():
             raise Exception(f"An unexpected error occurred: Invalid variable name '{var_name}' at line {line}")
 
-        # Reszta kodu pozostaje bez zmian
         if var_name in self.var_types:
             orig_line = self.var_types[var_name][1]
             raise Exception(f"Redeclaration of variable '{var_name}' at line {line}, originally declared at line {orig_line}")
@@ -491,20 +556,18 @@ class PySQLInterpreter(PySQLVisitor):
                 decl_elem = declared_type[6:-1]
                 inf_elem = inferred_type[6:-1]
                 
-                # Numeric promotion in arrays
                 if decl_elem == 'float' and inf_elem == 'int':
                     value = [float(x) if isinstance(x, int) else x for x in value]
                     inferred_type = 'array<float>'
 
-            # Implicit promotion from int to float
             if declared_type == 'float' and inferred_type == 'int':
                 value = float(value)
-                inferred_type = 'float' # Update inferred_type after promotion
+                inferred_type = 'float'
 
-            if not self.type_matches(declared_type, inferred_type): # type_matches already allows int for float
+            if not self.type_matches(declared_type, inferred_type):
                 raise Exception(f"Type mismatch in declaration of '{var_name}' at line {line}: expected {declared_type}, got {inferred_type}")
 
-        else: # Jeśli nie ma wartości początkowej
+        else:
             declared_type = ctx.varType().getText()
 
         self.memory[var_name] = value
@@ -514,10 +577,8 @@ class PySQLInterpreter(PySQLVisitor):
 
     def visitFactor(self, ctx: PySQLParser.FactorContext):
         if ctx.getChildCount() == 4 and ctx.getChild(1).getText() == '[' and ctx.getChild(3).getText() == ']':
-            # Get the array name
             array_name = ctx.getChild(0).getText()
             
-            # Get the index expression - CORRECTED: visit the expression child directly
             index_expr_ctx = ctx.getChild(2)
             index_val = self.visit(index_expr_ctx)
             
@@ -613,30 +674,63 @@ class PySQLInterpreter(PySQLVisitor):
                     suggestion=suggestion_text
                 )
             
-            params, ret_type, body_stmts = self.functions[fname]
+#            params, ret_type, body_stmts = self.functions[fname]
+            params, ret_type, func_impl = self.functions[fname]
 
             if len(args) != len(params):
                 raise Exception(f"Function '{fname}' expects {len(params)} args, got {len(args)} at line {ctx.start.line}")
 
-            saved_memory = self.memory.copy()
-            saved_types = self.var_types.copy()
-            current_call_line = ctx.start.line
-
+            processed_args = []
             for i, ((pname, ptype), val) in enumerate(zip(params, args)):
                 actual_type = self.infer_type(val)
-                arg_line = ctx.exprList().expr(i).start.line if ctx.exprList() and ctx.exprList().expr(i) else current_call_line
+                arg_line = ctx.exprList().expr(i).start.line if ctx.exprList() else ctx.start.line
 
                 if ptype == 'float' and actual_type == 'int':
                     val = float(val)
                     actual_type = 'float'
 
                 if not self.type_matches(ptype, actual_type):
-                     raise Exception(f"Incorrect type for parameter '{pname}' (index {i}) in call to '{fname}' at line {arg_line}. Expected {ptype}, got {actual_type}")
+                    raise Exception(f"Incorrect type for parameter '{pname}' in call to '{fname}' at line {arg_line}. Expected {ptype}, got {actual_type}")
+                processed_args.append(val)
+            
+            # Handle built-in functions (direct call)
+            if callable(func_impl):
+                try:
+                    result = func_impl(*processed_args)
+                    # Validate return type
+                    actual_ret_type = self.infer_type(result)
+                    if ret_type == 'float' and actual_ret_type == 'int':
+                        result = float(result)
+                        actual_ret_type = 'float'
+                    if not self.type_matches(ret_type, actual_ret_type):
+                        raise PySQLTypeError(
+                            f"Function '{fname}' returned incorrect type",
+                            line=ctx.start.line,
+                            context_text=str(result),
+                            suggestion=f"Expected {ret_type}, got {actual_ret_type}"
+                        )
+                    return result
+                except PySQLException as e:
+                    if e.line is None:
+                        e.line = ctx.start.line
+                    raise e
+                except Exception as e:
+                    raise PySQLRuntimeError(
+                        f"Error in built-in function '{fname}': {str(e)}",
+                        line=ctx.start.line,
+                        context_text=fname
+                    )
+                
+            saved_memory = self.memory.copy()
+            saved_types = self.var_types.copy()
+            current_call_line = ctx.start.line
+            
+            for i, ((pname, ptype), val) in enumerate(zip(params, processed_args)):
                 self.memory[pname] = val
-                self.var_types[pname] = (ptype, arg_line)
+                self.var_types[pname] = (ptype, current_call_line)
             
             try:
-                for stmt_ctx in body_stmts:
+                for stmt_ctx in func_impl:
                     self.visit(stmt_ctx)
             except ReturnException as r:
                 result = r.value
@@ -684,6 +778,10 @@ class PySQLInterpreter(PySQLVisitor):
         
         elif ctx.arrayLiteral():
             return self.visit(ctx.arrayLiteral())
+            
+        elif ctx.arrayIndex():
+            arr, index = self.visit(ctx.arrayIndex())
+            return arr[index]
 
         elif ctx.selectExpr():
             return self.visit(ctx.selectExpr())
@@ -691,12 +789,99 @@ class PySQLInterpreter(PySQLVisitor):
         else:
             raise Exception(f"Invalid or unhandled factor structure near '{ctx.getText()}' at line {ctx.start.line}")
 
+    # String functions
+    def builtin_toUpper(self, s):
+        if not isinstance(s, str):
+            raise PySQLTypeError("toUpper expects a string argument", context_text=str(s))
+        return s.upper()
+
+    def builtin_toLower(self, s):
+        if not isinstance(s, str):
+            raise PySQLTypeError("toLower expects a string argument", context_text=str(s))
+        return s.lower()
+
+    def builtin_startsWith(self, s, prefix):
+        if not isinstance(s, str) or not isinstance(prefix, str):
+            raise PySQLTypeError("startsWith expects two string arguments")
+        return s.startswith(prefix)
+
+    def builtin_endsWith(self, s, suffix):
+        if not isinstance(s, str) or not isinstance(suffix, str):
+            raise PySQLTypeError("endsWith expects two string arguments")
+        return s.endswith(suffix)
+
+    def builtin_contains(self, s, substring):
+        if not isinstance(s, str) or not isinstance(substring, str):
+            raise PySQLTypeError("contains expects two string arguments")
+        return substring in s
+
+    # Numerical aggregation functions
+    def builtin_sum(self, arr):
+        if not isinstance(arr, list):
+            raise PySQLTypeError("sum expects an array argument", context_text=str(arr))
+        if not all(isinstance(x, (int, float)) for x in arr):
+            raise PySQLTypeError("sum expects a numerical array")
+        return sum(arr)
+
+    def builtin_avg(self, arr):
+        if not isinstance(arr, list):
+            raise PySQLTypeError("avg expects an array argument", context_text=str(arr))
+        if not arr:
+            raise PySQLValueError("avg cannot be calculated for empty array")
+        if not all(isinstance(x, (int, float)) for x in arr):
+            raise PySQLTypeError("avg expects a numerical array")
+        return sum(arr) / len(arr)
+
+    def builtin_min(self, arr):
+        if not isinstance(arr, list):
+            raise PySQLTypeError("min expects an array argument", context_text=str(arr))
+        if not arr:
+            raise PySQLValueError("min cannot be calculated for empty array")
+        if not all(isinstance(x, (int, float)) for x in arr):
+            raise PySQLTypeError("min expects a numerical array")
+        return min(arr)
+
+    def builtin_max(self, arr):
+        if not isinstance(arr, list):
+            raise PySQLTypeError("max expects an array argument", context_text=str(arr))
+        if not arr:
+            raise PySQLValueError("max cannot be calculated for empty array")
+        if not all(isinstance(x, (int, float)) for x in arr):
+            raise PySQLTypeError("max expects a numerical array")
+        return max(arr)
+
+    def builtin_count(self, arr):
+        if not isinstance(arr, list):
+            raise PySQLTypeError("count expects an array argument", context_text=str(arr))
+        return len(arr)
+
+    def builtin_median(self, arr):
+        if not isinstance(arr, list):
+            raise PySQLTypeError("median expects an array argument", context_text=str(arr))
+        if not arr:
+            raise PySQLValueError("median cannot be calculated for empty array")
+        if not all(isinstance(x, (int, float)) for x in arr):
+            raise PySQLTypeError("median expects a numerical array")
+            
+        sorted_arr = sorted(arr)
+        n = len(sorted_arr)
+        mid = n // 2
+        
+        if n % 2 == 1:
+            return sorted_arr[mid]
+        else:
+            return (sorted_arr[mid - 1] + sorted_arr[mid]) / 2.0
+
+    def builtin_length(self, arr):
+        if not isinstance(arr, list):
+            raise PySQLTypeError("length expects an array argument", context_text=str(arr))
+        return len(arr)
+
     def apply_operator(self, left, op, right, line):
         try:
             if op == '+':
                 if isinstance(left, bool) or isinstance(right, bool):
                     raise Exception(f"Boolean values cannot be used in arithmetic operations at line {line}")
-                # Dopuszczamy tylko: liczba + liczba LUB string + string
                 if isinstance(left, str) and isinstance(right, str):
                     return left + right
                 elif isinstance(left, (int, float)) and isinstance(right, (int, float)):
@@ -705,7 +890,6 @@ class PySQLInterpreter(PySQLVisitor):
                     raise TypeError()
 
             elif op in ('-', '*', '/'):
-                # Wymagamy dwóch liczb i blokujemy boolean
                 self.check_numeric(left, right, line)
                 if op == '-': return left - right
                 if op == '*': return left * right
@@ -713,7 +897,7 @@ class PySQLInterpreter(PySQLVisitor):
                     if right == 0:
                         raise ZeroDivisionError()
                     if isinstance(left, int) and isinstance(right, int):
-                        return left // right  # <== ZMIANA TUTAJ
+                        return left // right
                     else:
                         return left / right
 
@@ -740,7 +924,6 @@ class PySQLInterpreter(PySQLVisitor):
 
     def visitIfStat(self, ctx):
         condition = self.visit(ctx.expr())
-        # Check if the condition is a boolean
         if not isinstance(condition, bool):
             line = ctx.expr().start.line
             raise Exception(f"Condition must be a boolean, got {type(condition)} at line {line}")
@@ -779,36 +962,28 @@ class PySQLInterpreter(PySQLVisitor):
         """
         NOWA, elastyczna implementacja pętli 'for' pasująca do nowej gramatyki.
         """
-        # 1. Inicjalizacja pętli (może być pusta)
-        # Ta linia wywoła visitVarDecl LUB visitExpr (które może wywołać visitAssign)
         if ctx.forInitializer():
             self.visit(ctx.forInitializer())
 
         while True:
-            # 2. Warunek pętli (jeśli pusty, przyjmujemy 'true')
             condition = True
             if ctx.expr():
                 condition_val = self.visit(ctx.expr())
-                # Używamy Twojej logiki sprawdzania typu boolean
                 if not isinstance(condition_val, bool):
                     raise Exception(f"'for' condition must be a boolean at line {ctx.start.line}")
                 condition = condition_val
             
             if not condition:
                 break
-
-            # 3. Wykonanie bloku kodu (z obsługą break/continue)
             try:
                 self.visit(ctx.block())
             except BreakException:
                 break
             except ContinueException:
-                # Jeśli wystąpi 'continue', przechodzimy do aktualizacji i kolejnej iteracji
                 if ctx.forUpdate():
                     self.visit(ctx.forUpdate())
                 continue
 
-            # 4. Aktualizacja zmiennych (może być pusta)
             if ctx.forUpdate():
                 self.visit(ctx.forUpdate())
     
@@ -824,7 +999,7 @@ class ContinueException(Exception): pass
 
 class PySQLErrorListener(ErrorListener):
     def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e: RecognitionException):
-        error_message = msg  # Domyślny komunikat ANTLR
+        error_message = msg
         context_text = None
         suggestion = None   # Na razie nie implementujemy sugestii dla błędów składniowych
 
@@ -996,7 +1171,3 @@ if __name__ == "__main__":
         print(f"Error: File '{filename}' not found.")
     except Exception as e:
         print(f"An error occurred: {e}")
-
-
-    
-
