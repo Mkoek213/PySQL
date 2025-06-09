@@ -118,7 +118,10 @@ class PySQLInterpreter(PySQLVisitor):
             'median': ([('arr', 'array<mixed>')], 'float', self.builtin_median),
             
             # Array functions
-            'length': ([('arr', 'array<mixed>')], 'int', self.builtin_length),
+            'len': ([('arr', 'mixed')], 'int', self.builtin_length),  # Array version
+            
+            # Type function
+            'type': ([('value', 'mixed')], 'string', self.builtin_type)
         }
 
         if shared_import_context is None:
@@ -638,7 +641,16 @@ class PySQLInterpreter(PySQLVisitor):
                 if isinstance(value_to_cast, float): return value_to_cast != 0.0
                 if isinstance(value_to_cast, bool): return value_to_cast
                 raise Exception(f"Cannot cast type {self.infer_type(value_to_cast)} to 'bool' at line {ctx.start.line}")
-            
+            elif target_type_str == 'string':
+                if value_to_cast is None:
+                    return "null"
+                if isinstance(value_to_cast, bool):
+                    return "true" if value_to_cast else "false"
+                elif isinstance(value_to_cast, list):
+                    return self._array_to_literal_string(value_to_cast)
+                else:
+                    return str(value_to_cast)
+                    
             else:
                 raise Exception(f"Unsupported cast to type '{target_type_str}' at line {ctx.start.line}")
 
@@ -789,6 +801,21 @@ class PySQLInterpreter(PySQLVisitor):
         else:
             raise Exception(f"Invalid or unhandled factor structure near '{ctx.getText()}' at line {ctx.start.line}")
 
+    def _array_to_literal_string(self, arr):
+        elements = []
+        for item in arr:
+            if isinstance(item, bool):
+                s = "true" if item else "false"
+            elif isinstance(item, str):
+                escaped = item.replace('\\', '\\\\').replace('"', '\\"')
+                s = '"' + escaped + '"'
+            elif isinstance(item, list):
+                s = self._array_to_literal_string(item)
+            else:
+                s = str(item)
+            elements.append(s)
+        return '[' + ', '.join(elements) + ']'
+    
     # String functions
     def builtin_toUpper(self, s):
         if not isinstance(s, str):
@@ -873,9 +900,37 @@ class PySQLInterpreter(PySQLVisitor):
             return (sorted_arr[mid - 1] + sorted_arr[mid]) / 2.0
 
     def builtin_length(self, arr):
-        if not isinstance(arr, list):
-            raise PySQLTypeError("length expects an array argument", context_text=str(arr))
-        return len(arr)
+        if isinstance(arr, str):   # Handle strings
+            return len(arr)
+        elif isinstance(arr, list):  # Handle arrays
+            return len(arr)
+        else:
+            raise TypeError(f"Unsupported type for len(): {type(arr).__name__}")
+        
+    def builtin_type(self, value):
+        if value is None:
+            return "null"
+        
+        if isinstance(value, bool):
+            return "bool"
+        if isinstance(value, int):
+            return "int"
+        if isinstance(value, float):
+            return "float"
+        if isinstance(value, str):
+            return "string"
+        if isinstance(value, list):
+            if not value:
+                return "array<empty>"
+            
+            elem_types = {self.builtin_type(elem) for elem in value}
+            
+            if len(elem_types) == 1:
+                return f"array<{next(iter(elem_types))}>"
+            else:
+                return "array<mixed>"
+        
+        return "unknown"
 
     def apply_operator(self, left, op, right, line):
         try:
