@@ -1,0 +1,82 @@
+print("1. Basic SELECT expressions")
+array<int> numbers = [1, 2, 3, 4, 5]
+print("Basic SELECT:")
+print(SELECT _ FROM numbers)  // [1,2,3,4,5]
+print(SELECT _ * 2 FROM numbers)  // [2,4,6,8,10]
+print(SELECT _ FROM numbers where _ > 3)  // [4,5]
+
+print("2. Built-in string functions")
+string greeting = "Hello, PySQL!"
+print(toUpper(greeting))  // "HELLO, PYTHON!"
+print(toLower(greeting))  // "hello, pysql!"
+print(startsWith(greeting, "Hello"))  // true
+print(endsWith(greeting, "SQL!"))  // true
+print(contains(greeting, "Py"))  // true
+
+print("3. Array functions and aggregations")
+array<mixed> data = [10, 20, 30, 40, 50]
+print(len(data))  // 5
+print(sum(data))  // 150
+print(avg(data))  // 30.0
+print(min(data))  // 10
+print(max(data))  // 50
+print(median(data))  // 30.0
+
+print("4. Complex SELECT with calculations")
+string currency = "pln"
+array<float> prices = [9.99, 5.49, 12.99, 3.25]
+print(SELECT _ * 1.2 FROM prices)  // Add 20% tax [11.988, 6.588, 15.588, 3.9]
+print(SELECT toUpper((string)_ + currency) FROM prices WHERE _ > 5.0)  // ["9.99", "5.49", "12.99"]
+
+print("5. Working with mixed-type arrays")
+array<mixed> items = [1, "apple", 2.5, "banana", true]
+print(SELECT _ FROM items WHERE type(_) == "string")  // ["apple", "banana"]
+print(SELECT len((string)_) FROM items WHERE type(_) == "string")  // [5,6]
+
+print("6. Nested SELECT expressions")
+array<array<int>> matrix = [[1,2], [3,4], [5,6]]
+print(SELECT SELECT _ * 2 FROM _ FROM matrix) // [[2,4],[6,8],[10,12]]
+print(SELECT sum(_) FROM matrix)  // [3,7,11]
+
+print("7. Using built-ins in conditions")
+array<string> names = ["Alice", "Bob", "Charlie", "David"]
+print(SELECT _ FROM names WHERE len(_) > 4)  // ["Alice","Charlie","David"]
+print(SELECT toUpper(_) FROM names WHERE startsWith(_, "C"))  // ["CHARLIE"]
+
+print("8. Custom function in SELECT")
+func square(n: int) -> int exec (
+    return n * n
+)
+
+print(SELECT square(_) FROM numbers) // [1,4,9,16,25]
+
+print("9. Complex data transformation")
+array<array<mixed>> products = [
+    ["Laptop", 999.99, 5],
+    ["Phone", 699.99, 10],
+    ["Tablet", 399.99, 8]
+]
+
+array<string> productInfo = SELECT
+    toUpper(_[0]) + ": $" + (string)_[1] + " (" + (string)_[2] + " in stock)"
+    FROM products
+
+print(productInfo)
+// ["LAPTOP: $999.99 (5 in stock)", "PHONE: $699.99 (10 in stock)", "TABLET: $399.99 (8 in stock)"]
+
+array<array<mixed>> Users = [
+    ["Janek", 21],
+    ["Franek", 17],
+    ["Jakub", 18]
+]
+
+func isValid(arr: array<mixed>) -> bool exec(
+    if (arr[1] > 17) then
+        return true
+    else
+        return false
+)
+
+array<string> validUsersNames = SELECT _[0] FROM Users WHERE isValid(_)
+
+print(validUsersNames) // ['Janek', 'Jakub']
