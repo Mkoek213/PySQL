@@ -45,8 +45,10 @@ factor:
     | 'not' factor
     | '(' expr ')'
     | identifierName '[' expr ']'
+    | parentAccess
     ;
 
+parentAccess: ('parent::')+ identifierName ;
 
 exprList: expr (',' expr)* ;
 
