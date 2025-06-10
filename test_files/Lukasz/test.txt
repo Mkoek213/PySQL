@@ -1,6 +1,4 @@
-// Test1 
-
-
+/\
 int x = 1
 func foo(n: int) ->void exec (
     int x = 100
@@ -13,19 +11,19 @@ func foo(n: int) ->void exec (
     print(parent::x)
 )
 foo(2)
-
+/\
 
 
 // Test2
-
 /\
+
 for (int i = 0; i < 10; i=i+1) do {
   for (int j = 0; j < i; j=j+1) do {
     print(i,j)
   }
 }
-
 /\
+
 
 //Test3
 
@@ -37,5 +35,35 @@ for (int i = 0; i < 10; i=i+1) do{
     j =j+ 1
   }
 }
-
 /\
+
+
+string x = "Jestem zmienną GLOBALNĄ (poziom 0)"
+print("Przed blokami, x to: ", x)
+print("") // Pusta linia dla czytelności
+
+{
+    // Poziom 1: Pierwszy zagnieżdżony zakres
+    string x = "Jestem w BLOKU 1 (poziom 1)"
+    print("Wewnątrz bloku 1, x to: ", x)
+    print("Wewnątrz bloku 1, parent::x to: ", parent::x)
+    print("")
+
+    {
+        // Poziom 2: Drugi zagnieżdżony zakres
+        string x = "Jestem w BLOKU 2 (poziom 2)"
+        
+        print("--- Jesteśmy w najgłębszym bloku (poziom 2) ---")
+        print("-> Zwykły x           : ", x)
+        print("-> parent::x         : ", parent::x)
+        print("-> parent::parent::x  : ", parent::parent::x)
+        print("---------------------------------------------")
+        print("")
+    }
+
+    // Po wyjściu z bloku 2, `x` znowu jest tym z bloku 1
+    print("Po wyjściu z bloku 2, x to znowu: ", x)
+}
+
+// Po wyjściu z obu bloków, `x` znowu jest globalne
+print("Po wyjściu z wszystkich bloków, x to: ", x)
