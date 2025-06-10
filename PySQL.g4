@@ -15,6 +15,7 @@ stat:   varDecl
       | breakStat
       | continueStat
       | importStat
+      | block
       ;
 
 parentAccess: 'parent' '::' ;

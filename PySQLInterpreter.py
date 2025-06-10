@@ -1139,15 +1139,21 @@ class PySQLInterpreter(PySQLVisitor):
         self.var_types.pop()
 
     
-    def visitBlock(self, ctx):
-        # Dodanie nowego scope'a dla bloku kodu
+    def visitBlock(self, ctx: PySQLParser.BlockContext):
+        # Tworzymy nowy, pusty zakres dla tego bloku
         self.scopes.append({})
         self.var_types.append({})
-        for stmt in ctx.stat():
-            self.visit(stmt)
-        # Usunięcie zakresu po zakończeniu bloku
-        self.scopes.pop()
-        self.var_types.pop()
+        
+        try:
+            # Wykonujemy wszystkie instrukcje wewnątrz bloku
+            for stmt in ctx.stat():
+                self.visit(stmt)
+        finally:
+            # Po wyjściu z bloku (nawet przez 'return'), ZAWSZE usuwamy jego zakres
+            self.scopes.pop()
+            self.var_types.pop()
+        
+        return None
 
     
 class BreakException(Exception): pass
