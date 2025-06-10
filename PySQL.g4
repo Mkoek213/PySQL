@@ -17,7 +17,8 @@ stat:   varDecl
       | importStat
       ;
 
-identifierName: ID | INVALID_NUMBER ;
+parentAccess: 'parent' '::' ;
+identifierName: parentAccess* (ID | INVALID_NUMBER) ;
 varDecl: varType identifierName ('=' expr)? ;
 assign: (identifierName | arrayIndex) '=' expr ;
 arrayIndex: identifierName '[' expr ']' ;
@@ -63,7 +64,7 @@ arrayLiteral: '[' (expr (',' expr)*)? ']' ;
 
 IMPORT: 'import';
 PRINT: 'print' ;
-printStat: PRINT '(' expr ')' ;
+printStat: PRINT '(' exprList? ')' ;
 
 ifStat: 'if' '(' expr ')' 'then' (stat | printStat) ('else' (stat | printStat))? ;
 
