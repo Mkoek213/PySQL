@@ -97,8 +97,8 @@ class PySQLRuntimeError(PySQLException): pass  # Ogólne błędy wykonania
 
 class PySQLInterpreter(PySQLVisitor):
     def __init__(self, base_dir="", shared_import_context=None):
-        self.memory = {}
-        self.var_types = {}
+        self.scopes = [{}]  # Stos zakresów zmiennych
+        self.var_types = [{}]  # Typy zmiennych dla każdego scope
         self.functions = {}
         self.base_dir = base_dir
         self.functions = {
@@ -126,11 +126,19 @@ class PySQLInterpreter(PySQLVisitor):
 
         if shared_import_context is None:
             self.shared_import_context = {
-                'globally_parsed_modules': {}, # file_path -> {'memory':..., 'functions':..., 'var_types':...}
+                'globally_parsed_modules': {}, # file_path -> {'scopes':..., 'functions':..., 'var_types':...}
                 'currently_parsing': set()     # set of absolute file_paths
             }
         else:
             self.shared_import_context = shared_import_context
+
+    def _find_variable_scope(self, var_name):
+        """Przeszukuje stos zakresów od końca w poszukiwaniu zmiennej."""
+        for scope in reversed(self.scopes):
+            if var_name in scope:
+                return scope
+        return None
+
 
            
     def _get_or_parse_module(self, relative_path):
@@ -176,116 +184,109 @@ class PySQLInterpreter(PySQLVisitor):
 
 
         module_state = {
-            'memory': module_interpreter.memory.copy(),
+            'scopes': module_interpreter.scopes.copy(),  # ZAMIANA memory -> scopes
             'functions': module_interpreter.functions.copy(),
             'var_types': module_interpreter.var_types.copy()
         }
 
-        self.shared_import_context['globally_parsed_modules'][file_path_to_import] = module_state
+
+        self.shared_import_context['globally_parsed_modules'][file_path_to_import] = {
+            'scopes': module_interpreter.scopes.copy(),
+            'functions': module_interpreter.functions.copy(),
+            'var_types': module_interpreter.var_types.copy()
+}
+
         self.shared_import_context['currently_parsing'].remove(file_path_to_import)
 
         return module_state
     
-    def visitFullImport(self, ctx: PySQLParser.FullImportContext): # Parameter type from ANTLR
-        path_raw = ctx.STRING().getText()[1:-1] # Get "file.txt"
+    def visitFullImport(self, ctx: PySQLParser.FullImportContext):
+        path_raw = ctx.STRING().getText()[1:-1]  # Pobranie nazwy pliku
 
         module_state = self._get_or_parse_module(path_raw)
 
-        for name, value in module_state['memory'].items():
-            if name in self.functions: # Check for clash with existing function in current scope
+        # Importowanie zmiennych z modułu do aktualnego scope'a
+        for name, value in module_state['scopes'][0].items():  # ZAMIANA memory -> scopes[0]
+            if name in self.functions:  # Sprawdzenie konfliktu nazw z funkcją
                 raise Exception(f"Name clash during full import from '{path_raw}': Cannot import variable '{name}', a function with this name already exists in the current scope.")
-            self.memory[name] = value
-            if name in module_state['var_types']: # Also copy type information
-                self.var_types[name] = module_state['var_types'][name]
+            self.scopes[-1][name] = value  # ZAMIANA memory -> scopes[-1]
+            
+            if name in module_state['var_types']:  # Tak samo kopiujemy typy
+                self.var_types[-1][name] = module_state['var_types'][name]  # ZAMIANA var_types
 
+        # Importowanie funkcji
         for name, func_def in module_state['functions'].items():
-            if name in self.memory:  # Check for clash with existing variable in current scope
+            if name in self.scopes[-1]:  # Sprawdzenie konfliktu nazw z zmienną
                 raise Exception(f"Name clash during full import from '{path_raw}': Cannot import function '{name}', a variable with this name already exists in the current scope.")
-            self.functions[name] = func_def
+            self.functions[name] = func_def  # Funkcje pozostają globalne
 
-        return None 
+        return None
+
     
-    def visitSelectiveImport(self, ctx: PySQLParser.SelectiveImportContext): # Parameter type from ANTLR
-        path_raw = ctx.STRING().getText()[1:-1] # Get "file.txt"
+    def visitSelectiveImport(self, ctx: PySQLParser.SelectiveImportContext):  
+        path_raw = ctx.STRING().getText()[1:-1]  # Pobranie nazwy pliku
 
         items_to_import = [id_node.getText() for id_node in ctx.idList().identifierName()]
-
         module_state = self._get_or_parse_module(path_raw)
 
         for item_name in items_to_import:
             imported_successfully = False
 
-            if item_name in module_state['memory']:
-                if item_name in self.functions: # Clash with existing function in current scope
+            # Importowanie zmiennych z modułu do aktualnego scope'a
+            if item_name in module_state['scopes'][0]:  # ZAMIANA memory -> scopes[0]
+                if item_name in self.functions:  # Sprawdzenie konfliktu nazw z funkcją
                     raise Exception(f"Name clash while importing '{item_name}' from '{path_raw}': A function with this name already exists in the current scope.")
-                self.memory[item_name] = module_state['memory'][item_name]
-                if item_name in module_state['var_types']:
-                    self.var_types[item_name] = module_state['var_types'][item_name]
+                self.scopes[-1][item_name] = module_state['scopes'][0][item_name]  # ZAMIANA memory -> scopes[-1]
+
+                if item_name in module_state['var_types']:  # Kopiowanie typów zmiennych
+                    self.var_types[-1][item_name] = module_state['var_types'][item_name]  # ZAMIANA var_types
+
                 imported_successfully = True
 
+            # Importowanie funkcji
             if item_name in module_state['functions']:
-                if not imported_successfully: # Not yet imported as a variable
-                    if item_name in self.memory: # Clash with existing variable in current scope
+                if not imported_successfully:  # Jeśli jeszcze nie zostało zaimportowane jako zmienna
+                    if item_name in self.scopes[-1]:  # Sprawdzenie konfliktu nazw z zmienną
                         raise Exception(f"Name clash while importing function '{item_name}' from '{path_raw}': A variable with this name already exists in the current scope.")
                     self.functions[item_name] = module_state['functions'][item_name]
                     imported_successfully = True
 
+            # Sprawdzenie, czy import się udał
             if not imported_successfully:
                 raise Exception(f"Item '{item_name}' not found as variable or function in module '{path_raw}' (imported at line {ctx.start.line})")
 
         return None
+
     
-    def visitFuncDef(self, ctx):
-        # Ta część pozostaje bez zmian
-        name = ctx.identifierName().getText()
+    def visitFuncDef(self, ctx: PySQLParser.FuncDefContext):
+        fname = ctx.identifierName().ID().getText()
         line = ctx.start.line
 
-        if not re.match(r'^[a-zA-Z_][a-zA-Z_0-9]*$', name):
-            raise PySQLNameError(
-                message=f"Invalid function name",
-                line=line,
-                context_text=name
-            )
+        if fname in self.functions:
+            raise PySQLNameError(f"Function '{fname}' already defined", line=line)
 
-        if name in self.functions:
-            raise PySQLNameError(
-                message=f"Function '{name}' already defined",
-                line=line,
-                context_text=name
-            )
-            
         params = []
         if ctx.paramList():
-            # ZMIANA: Zamiast ctx.paramList().ID() używamy ctx.paramList().identifierName()
             param_names_ctx = ctx.paramList().identifierName()
             param_types_ctx = ctx.paramList().varType()
-            
             for pname_ctx, ptype_ctx in zip(param_names_ctx, param_types_ctx):
                 param_name = pname_ctx.getText()
-                
-                # NOWOŚĆ: Walidacja nazwy każdego parametru
+
                 if not re.match(r'^[a-zA-Z_][a-zA-Z_0-9]*$', param_name):
-                    raise PySQLNameError(
-                        message=f"Invalid parameter name",
-                        line=pname_ctx.start.line,
-                        context_text=param_name
-                    )
-                
-                # Sprawdzenie, czy nazwy parametrów się nie powtarzają
+                    raise PySQLNameError(f"Invalid parameter name", line=pname_ctx.start.line, context_text=param_name)
+
                 if param_name in [p[0] for p in params]:
-                    raise PySQLNameError(
-                        message=f"Duplicate parameter name '{param_name}' in function definition",
-                        line=pname_ctx.start.line,
-                        context_text=param_name
-                    )
-                
+                    raise PySQLNameError(f"Duplicate parameter name '{param_name}' in function definition", line=pname_ctx.start.line, context_text=param_name)
+
                 params.append((param_name, ptype_ctx.getText()))
-                
+
         ret_type = ctx.returnType().getText()
-        body = ctx.stat()
-        self.functions[name] = (params, ret_type, body)
         
+        # Przechowujemy listę instrukcji (węzłów ANTLR), a nie wrapper
+        body_stmts = ctx.stat() 
+        self.functions[fname] = (params, ret_type, body_stmts)
         return None
+
         
     def visitSelectExpr(self, ctx):
         source_ctx = ctx.expr(1)
@@ -297,43 +298,45 @@ class PySQLInterpreter(PySQLVisitor):
                 line=source_ctx.start.line,
                 context_text=str(source)
             )
-        
+
         results = []
         for element in source:
-            saved_underscore = self.memory.get('_', None)
-            saved_underscore_type = self.var_types.get('_', None)
-            
-            self.memory['_'] = element
-            self.var_types['_'] = (self.infer_type(element), ctx.start.line)
-            
+            # ZAMIANA memory -> scopes[-1]
+            saved_underscore = self.scopes[-1].get('_', None)
+            saved_underscore_type = self.var_types[-1].get('_', None)
+
+            self.scopes[-1]['_'] = element  # ZAMIANA memory -> scopes[-1]
+            self.var_types[-1]['_'] = (self.infer_type(element), ctx.start.line)  # ZAMIANA var_types
+
             try:
                 if ctx.WHERE():
                     condition_ctx = ctx.expr(2)
                     condition = self.visit(condition_ctx)
-                    
+
                     if not isinstance(condition, bool):
                         raise PySQLTypeError(
                             "WHERE clause must return boolean",
                             line=condition_ctx.start.line,
-                            context_text=str(condition))
+                            context_text=str(condition)
+                        )
                     
                     if not condition:
                         continue
-                
+
                 projection_ctx = ctx.expr(0)
                 result = self.visit(projection_ctx)
                 results.append(result)
-                
+
             finally:
                 if saved_underscore is not None:
-                    self.memory['_'] = saved_underscore
-                    self.var_types['_'] = saved_underscore_type
+                    self.scopes[-1]['_'] = saved_underscore  # ZAMIANA memory -> scopes[-1]
+                    self.var_types[-1]['_'] = saved_underscore_type  # ZAMIANA var_types
                 else:
-                    if '_' in self.memory:
-                        del self.memory['_']
-                    if '_' in self.var_types:
-                        del self.var_types['_']
-        
+                    if '_' in self.scopes[-1]:  # ZAMIANA memory -> scopes[-1]
+                        del self.scopes[-1]['_']
+                    if '_' in self.var_types[-1]:  # ZAMIANA var_types
+                        del self.var_types[-1]['_']
+
         if ctx.ORDER():
             order_direction = ctx.DESC() is not None
             try:
@@ -342,61 +345,87 @@ class PySQLInterpreter(PySQLVisitor):
                 raise PySQLTypeError(
                     "Cannot sort mixed-type arrays",
                     line=ctx.start.line,
-                    context_text=str(results))
-        
+                    context_text=str(results)
+                )
+
         return results
+
 
     def visitReturnStat(self, ctx):
         val = self.visit(ctx.expr()) if ctx.expr() else None
         raise ReturnException(val)
         
-    def visitAssign(self, ctx):
+    def visitAssign(self, ctx: PySQLParser.AssignContext):
+        value = self.visit(ctx.expr())
+
         if ctx.arrayIndex():
-            # Handle array index assignment
+            # Obsługa przypisania do indeksu w tablicy
             arr, index = self.visit(ctx.arrayIndex())
-            value = self.visit(ctx.expr())
-            
-            # Type checking
+
+            # Sprawdzenie typów
             if isinstance(arr, list) and arr:
                 elem_type = self.infer_type(arr[0])
                 value_type = self.infer_type(value)
-                
+
                 if elem_type == 'float' and value_type == 'int':
                     value = float(value)
                 elif not self.type_matches(elem_type, value_type):
-                    raise PySQLTypeError(
-                        f"Type mismatch: array contains {elem_type}, assigned value is {value_type}",
-                        line=ctx.start.line,
-                        context_text=str(value)
-                    )
-            
+                    raise PySQLTypeError(f"Type mismatch: array contains {elem_type}, assigned value is {value_type}", line=ctx.start.line)
+
             arr[index] = value
             return value
         else:
-            var_name = ctx.identifierName().getText()
-            value = self.visit(ctx.expr())
-            line = ctx.start.line
+            # Przypisanie do zmiennej
+            # NAJPIERW pobieramy kontekst nazwy zmiennej
+            identifier_ctx = ctx.identifierName()
+            var_name = identifier_ctx.ID().getText()
+            
+            # POPRAWKA: Odwołujemy się do parentAccess przez `identifier_ctx`, a nie `ctx`
+            levels = len(identifier_ctx.parentAccess())
 
-            if value is None:
-                raise Exception(f"Invalid value assigned to '{var_name}' at line {line}")
+            target_scope = None
+            target_types_scope = None
 
+            if levels > 0:
+                # Przypisanie do zmiennej w zakresie nadrzędnym `parent::`
+                scope_index = -1 - levels
+                if abs(scope_index) > len(self.scopes):
+                    raise PySQLNameError("Parent scope access out of bounds for assignment", line=ctx.start.line)
+                
+                target_scope = self.scopes[scope_index]
+                target_types_scope = self.var_types[scope_index]
+                if var_name not in target_scope:
+                    raise PySQLNameError(f"Cannot assign to undefined variable '{var_name}' in parent scope", line=ctx.start.line)
+            else:
+                # Normalne przypisanie: szukaj od wewnątrz.
+                target_scope = self._find_variable_scope(var_name)
+                if target_scope is None:
+                    # Zmienna nie istnieje, tworzymy ją w bieżącym zakresie
+                    target_scope = self.scopes[-1]
+                    target_types_scope = self.var_types[-1]
+                else:
+                    # Znaleziono zmienną, znajdź odpowiedni zakres typów
+                    for types_scope in reversed(self.var_types):
+                        if var_name in types_scope:
+                            target_types_scope = types_scope
+                            break
+            
+            # Logika sprawdzania typów
             value_type = self.infer_type(value)
-
-            if var_name in self.var_types:
-                declared_type, decl_line = self.var_types[var_name]
-
+            if var_name in target_types_scope:
+                declared_type, decl_line = target_types_scope.get(var_name)
                 if declared_type == 'float' and value_type == 'int':
                     value = float(value)
                     value_type = 'float'
-
                 if not self.type_matches(declared_type, value_type):
-                    raise Exception(f"Type mismatch on assignment to '{var_name}' at line {line}. Declared as {declared_type} at line {decl_line}, assigned value of type {value_type}")
+                    raise PySQLTypeError(f"Type mismatch on assignment to '{var_name}' at line {ctx.start.line}. Declared as {declared_type}, assigned {value_type}")
             else:
-                self.var_types[var_name] = (value_type, line)
+                # Zmienna jest nowa, zapisz jej typ
+                target_types_scope[var_name] = (value_type, ctx.start.line)
 
-            self.memory[var_name] = value
+            target_scope[var_name] = value
             return value
-    
+        
     def infer_type(self, value):
         if isinstance(value, list):
             if not value:
@@ -444,43 +473,27 @@ class PySQLInterpreter(PySQLVisitor):
         elements = [self.visit(expr) for expr in ctx.expr()] if ctx.expr() else []
         return elements
     
-    def visitArrayIndex(self, ctx):
-        array_name = ctx.identifierName().getText()
+    # ZMIANA: Użycie visitIdentifierName do znalezienia tablicy
+    def visitArrayIndex(self, ctx: PySQLParser.ArrayIndexContext):
         index_expr = ctx.expr()
         index_val = self.visit(index_expr)
-        
-        if array_name not in self.memory:
-            suggestion = get_closest_match(array_name, self.memory.keys())
-            raise PySQLNameError(
-                f"Undefined array '{array_name}'",
-                line=ctx.start.line,
-                context_text=array_name,
-                suggestion=suggestion
-            )
-            
-        arr = self.memory[array_name]
+
+        # Używamy visitIdentifierName, aby poprawnie znaleźć tablicę w odpowiednim zakresie
+        arr = self.visit(ctx.identifierName())
+        array_name = ctx.identifierName().getText()
+
         if not isinstance(arr, list):
-            raise PySQLTypeError(
-                f"Variable '{array_name}' is not an array",
-                line=ctx.start.line,
-                context_text=array_name
-            )
-            
+            raise PySQLTypeError(f"Variable '{array_name}' is not an array", line=ctx.start.line)
+
         if not isinstance(index_val, int):
-            raise PySQLTypeError(
-                "Array index must be an integer",
-                line=index_expr.start.line,
-                context_text=str(index_val)
-            )
-            
-        if index_val < 0 or index_val >= len(arr):
-            raise PySQLValueError(
-                f"Array index out of bounds: {index_val}",
-                line=index_expr.start.line,
-                context_text=str(index_val)
-            )
+            raise PySQLTypeError("Array index must be an integer", line=index_expr.start.line)
+
+        if not 0 <= index_val < len(arr):
+            raise PySQLValueError(f"Array index out of bounds: {index_val}", line=index_expr.start.line)
         
+        # Zwracamy tablicę i indeks, co jest przydatne dla visitAssign
         return arr, index_val
+
     
     def visitLogicalExpr(self, ctx):
         left = self.visit(ctx.comparisonExpr(0))
@@ -546,19 +559,32 @@ class PySQLInterpreter(PySQLVisitor):
         if hasattr(identifier_ctx, 'INVALID_NUMBER') and identifier_ctx.INVALID_NUMBER():
             raise Exception(f"An unexpected error occurred: Invalid variable name '{var_name}' at line {line}")
 
-        if var_name in self.var_types:
-            orig_line = self.var_types[var_name][1]
+        if hasattr(identifier_ctx, 'INVALID_NUMBER') and identifier_ctx.INVALID_NUMBER():
+            raise Exception(f"An unexpected error occurred: Invalid variable name '{var_name}' at line {line}")
+
+        # Obsługa `parent::`
+        scope_index = -1
+        if hasattr(identifier_ctx, "parentAccess") and identifier_ctx.parentAccess():
+            levels = len(identifier_ctx.parentAccess())  # Poprawne odwołanie do parentAccess()
+            scope_index = -levels - 1
+
+            if abs(scope_index) > len(self.scopes):
+                raise Exception(f"Parent scope access out of bounds: {'parent::' * levels}{var_name}")
+
+        if var_name in self.var_types[scope_index]:  # Poprawne sprawdzanie w parent scope
+            orig_line = self.var_types[scope_index][var_name][1]
             raise Exception(f"Redeclaration of variable '{var_name}' at line {line}, originally declared at line {orig_line}")
 
         value = self.visit(ctx.expr()) if ctx.expr() else None
+        declared_type = ctx.varType().getText()
+
         if value is not None:
-            declared_type = ctx.varType().getText()
             inferred_type = self.infer_type(value)
-            
+
             if declared_type.startswith('array<') and inferred_type.startswith('array<'):
                 decl_elem = declared_type[6:-1]
                 inf_elem = inferred_type[6:-1]
-                
+
                 if decl_elem == 'float' and inf_elem == 'int':
                     value = [float(x) if isinstance(x, int) else x for x in value]
                     inferred_type = 'array<float>'
@@ -570,12 +596,13 @@ class PySQLInterpreter(PySQLVisitor):
             if not self.type_matches(declared_type, inferred_type):
                 raise Exception(f"Type mismatch in declaration of '{var_name}' at line {line}: expected {declared_type}, got {inferred_type}")
 
-        else:
-            declared_type = ctx.varType().getText()
+        # Poprawione zapisywanie zmiennej do właściwego scope'a
+        self.scopes[-1][var_name] = value
+        self.var_types[-1][var_name] = (declared_type, line)
 
-        self.memory[var_name] = value
-        self.var_types[var_name] = (declared_type, line)
         return value
+
+
 
 
     def visitFactor(self, ctx: PySQLParser.FactorContext):
@@ -585,16 +612,16 @@ class PySQLInterpreter(PySQLVisitor):
             index_expr_ctx = ctx.getChild(2)
             index_val = self.visit(index_expr_ctx)
             
-            if array_name not in self.memory:
-                suggestion = get_closest_match(array_name, self.memory.keys())
+            if array_name not in self.scopes[-1]:  # ZAMIANA memory -> scopes[-1]
+                suggestion = get_closest_match(array_name, self.scopes[-1].keys())  # ZAMIANA memory.keys() -> scopes[-1].keys()
                 raise PySQLNameError(
                     f"Undefined array '{array_name}'",
                     line=ctx.start.line,
                     context_text=array_name,
                     suggestion=suggestion
                 )
-                
-            arr = self.memory[array_name]
+
+            arr = self.scopes[-1][array_name]  # ZAMIANA memory -> scopes[-1]
             if not isinstance(arr, list):
                 raise PySQLTypeError(
                     f"Variable '{array_name}' is not an array",
@@ -669,7 +696,7 @@ class PySQLInterpreter(PySQLVisitor):
         elif ctx.STRING(): return ctx.STRING().getText()[1:-1]
         elif ctx.BOOL(): return ctx.BOOL().getText().lower() == 'true'
 
-        elif ctx.identifierName() and ctx.getChild(1) and ctx.getChild(1).getText() == '(':
+        elif ctx.identifierName() and ctx.getChildCount() > 1 and ctx.getChild(1).getText() == '(':
             fname = ctx.identifierName().getText()
             args = []
             if ctx.exprList():
@@ -681,13 +708,11 @@ class PySQLInterpreter(PySQLVisitor):
                 raise PySQLNameError(
                     f"Undefined function '{fname}'",
                     line=ctx.start.line,
-                    column=ctx.start.column,
-                    context_text=fname,
                     suggestion=suggestion_text
                 )
             
-#            params, ret_type, body_stmts = self.functions[fname]
-            params, ret_type, func_impl = self.functions[fname]
+            func_def = self.functions[fname]
+            params, ret_type, implementation = func_def
 
             if len(args) != len(params):
                 raise Exception(f"Function '{fname}' expects {len(params)} args, got {len(args)} at line {ctx.start.line}")
@@ -695,86 +720,60 @@ class PySQLInterpreter(PySQLVisitor):
             processed_args = []
             for i, ((pname, ptype), val) in enumerate(zip(params, args)):
                 actual_type = self.infer_type(val)
-                arg_line = ctx.exprList().expr(i).start.line if ctx.exprList() else ctx.start.line
-
                 if ptype == 'float' and actual_type == 'int':
                     val = float(val)
-                    actual_type = 'float'
-
-                if not self.type_matches(ptype, actual_type):
-                    raise Exception(f"Incorrect type for parameter '{pname}' in call to '{fname}' at line {arg_line}. Expected {ptype}, got {actual_type}")
+                if not self.type_matches(ptype, self.infer_type(val)):
+                    raise PySQLTypeError(f"Incorrect type for parameter '{pname}' in call to '{fname}'. Expected {ptype}, got {self.infer_type(val)}", line=ctx.start.line)
                 processed_args.append(val)
-            
-            # Handle built-in functions (direct call)
-            if callable(func_impl):
-                try:
-                    result = func_impl(*processed_args)
-                    # Validate return type
-                    actual_ret_type = self.infer_type(result)
-                    if ret_type == 'float' and actual_ret_type == 'int':
-                        result = float(result)
-                        actual_ret_type = 'float'
-                    if not self.type_matches(ret_type, actual_ret_type):
-                        raise PySQLTypeError(
-                            f"Function '{fname}' returned incorrect type",
-                            line=ctx.start.line,
-                            context_text=str(result),
-                            suggestion=f"Expected {ret_type}, got {actual_ret_type}"
-                        )
-                    return result
-                except PySQLException as e:
-                    if e.line is None:
-                        e.line = ctx.start.line
-                    raise e
-                except Exception as e:
-                    raise PySQLRuntimeError(
-                        f"Error in built-in function '{fname}': {str(e)}",
-                        line=ctx.start.line,
-                        context_text=fname
-                    )
-                
-            saved_memory = self.memory.copy()
-            saved_types = self.var_types.copy()
-            current_call_line = ctx.start.line
-            
-            for i, ((pname, ptype), val) in enumerate(zip(params, processed_args)):
-                self.memory[pname] = val
-                self.var_types[pname] = (ptype, current_call_line)
-            
-            try:
-                for stmt_ctx in func_impl:
-                    self.visit(stmt_ctx)
-            except ReturnException as r:
-                result = r.value
-                if ret_type != 'void':
-                    actual_ret_type = self.infer_type(result)
-                    if ret_type == 'float' and actual_ret_type == 'int':
-                        result = float(result)
-                        actual_ret_type = 'float'
-                    if not self.type_matches(ret_type, actual_ret_type):
-                        raise Exception(f"Function '{fname}' should return {ret_type}, got {actual_ret_type}. Called at line {current_call_line}")
-                self.memory = saved_memory
-                self.var_types = saved_types
-                return result
-            
-            self.memory = saved_memory
-            self.var_types = saved_types
-            if ret_type != 'void':
-                 raise Exception(f"Function '{fname}' defined with return type '{ret_type}' did not return a value. Called at line {current_call_line}")
-            return None
 
+            # Przypadek 1: Funkcja wbudowana
+            if callable(implementation):
+                try:
+                    result = implementation(*processed_args)
+                    if not self.type_matches(ret_type, self.infer_type(result)):
+                        raise PySQLTypeError(f"Built-in function '{fname}' returned incorrect type. Expected {ret_type}, got {self.infer_type(result)}.")
+                    return result
+                except Exception as e:
+                    raise PySQLRuntimeError(f"Error in built-in function '{fname}': {e}", line=ctx.start.line)
+
+            # Przypadek 2: Funkcja zdefiniowana przez użytkownika
+            else:
+                body_stmts = implementation
+                result = None
+
+                # ## KLUCZOWA ZMIANA JEST TUTAJ ##
+                # Tworzymy nowy zakres ZE ZNACZNIKIEM, że jest to zakres funkcyjny.
+                function_scope = {'__is_function_scope': True}
+                self.scopes.append(function_scope)
+                self.var_types.append({})
+
+                for i, ((pname, ptype), val) in enumerate(zip(params, processed_args)):
+                    self.scopes[-1][pname] = val
+                    self.var_types[-1][pname] = (ptype, ctx.start.line)
+                
+                try:
+                    for stmt_ctx in body_stmts:
+                        self.visit(stmt_ctx)
+                except ReturnException as r:
+                    result = r.value
+                finally:
+                    self.scopes.pop()
+                    self.var_types.pop()
+
+                if ret_type != 'void':
+                    if result is None:
+                        raise PySQLException(f"Function '{fname}' with return type '{ret_type}' did not return a value.", line=ctx.start.line)
+                    if not self.type_matches(ret_type, self.infer_type(result)):
+                        raise PySQLTypeError(f"Function '{fname}' should return {ret_type}, but got {self.infer_type(result)}.", line=ctx.start.line)
+
+                return result
+
+
+        # Obsługa zmiennych
+        # NOWA, POPRAWNA WERSJA w visitFactor
         elif ctx.identifierName():
-            var_name = ctx.identifierName().getText()
-            if var_name not in self.memory:
-                suggestion_text = get_closest_match(var_name, self.memory.keys())
-                raise PySQLNameError(
-                    f"Undefined variable '{var_name}'",
-                    line=ctx.start.line,
-                    column=ctx.start.column,
-                    context_text=var_name,
-                    suggestion=suggestion_text
-                )
-            return self.memory[var_name]
+            # Po prostu delegujemy zadanie do naszej nowej, centralnej metody
+            return self.visit(ctx.identifierName())
 
         elif ctx.getChildCount() == 2 and ctx.getChild(0).getText() == 'not':
             val_to_negate = self.visit(ctx.factor())
@@ -967,25 +966,101 @@ class PySQLInterpreter(PySQLVisitor):
         if isinstance(left, bool) or isinstance(right, bool):
             raise Exception(f"Boolean values cannot be used in arithmetic operations at line {line}")
 
-    def visitPrintStat(self, ctx):
-        value = self.visit(ctx.expr())
-        print(value)
-        return value
+    def visitPrintStat(self, ctx: PySQLParser.PrintStatContext):
+        # Sprawdzamy, czy w ogóle są jakieś wyrażenia do wydrukowania
+        if ctx.exprList():
+            # 1. Tworzymy listę wartości, odwiedzając każde wyrażenie z listy
+            values = [self.visit(expr) for expr in ctx.exprList().expr()]
+            
+            # 2. Używamy wbudowanej funkcji print w Pythonie z operatorem "*",
+            #    który "rozpakowuje" listę na osobne argumenty.
+            #    Domyślnie `print` oddziela argumenty spacją.
+            print(*values)
+            
+            # Opcjonalnie możemy zwrócić listę wartości, choć zwykle nie jest to potrzebne
+            return values
+        else:
+            # Obsługa wywołania `print()` bez argumentów - drukujemy pustą linię
+            print()
+            return None
     
     def visitProg(self, ctx):
         for child in ctx.stat():
             self.visit(child)
 
+    # NOWOŚĆ: Scentralizowana metoda do wyszukiwania zmiennych
+    def visitIdentifierName(self, ctx: PySQLParser.IdentifierNameContext):
+        var_name = ctx.ID().getText() 
+        levels = len(ctx.parentAccess())
 
-    def visitIfStat(self, ctx):
+        if levels > 0:
+            # ## TUTAJ ZNAJDUJE SIĘ NOWA, INTELIGENTNA LOGIKA ##
+            
+            # Sprawdzamy, czy znajdujemy się wewnątrz jakiejkolwiek funkcji na stosie
+            is_inside_function = any(
+                scope.get('__is_function_scope', False) for scope in self.scopes
+            )
+
+            target_scope = None
+            if is_inside_function:
+                # Jeśli jesteśmy w funkcji, `parent::` odnosi się do zakresu GLOBALNEGO.
+                # To uproszczenie, które rozwiązuje Twój problem z leksykalnym rodzicem.
+                if levels > 1:
+                    raise PySQLNameError("Nested parent access (parent::parent::) inside functions is not supported.", line=ctx.start.line)
+                target_scope = self.scopes[0] # Zakres globalny
+            else:
+                # Jeśli nie jesteśmy w funkcji (np. w zagnieżdżonych pętlach w zakresie globalnym), 
+                # używamy starej, prostej logiki dynamicznego rodzica.
+                scope_index = -1 - levels
+                if abs(scope_index) > len(self.scopes):
+                    raise PySQLNameError("Parent scope access out of bounds", line=ctx.start.line)
+                target_scope = self.scopes[scope_index]
+
+            # Wspólna logika sprawdzania, czy zmienna istnieje w docelowym zakresie
+            if var_name not in target_scope:
+                suggestion = get_closest_match(var_name, target_scope.keys())
+                raise PySQLNameError(f"Undefined variable '{var_name}' in specified parent scope", line=ctx.start.line, suggestion=suggestion)
+            
+            return target_scope[var_name]
+        else:
+            # Standardowe wyszukiwanie (bez `parent::`) pozostaje bez zmian
+            scope = self._find_variable_scope(var_name)
+            if scope is not None:
+                return scope[var_name]
+            
+            all_visible_vars = [k for s in self.scopes for k in s.keys()]
+            suggestion = get_closest_match(var_name, all_visible_vars)
+            raise PySQLNameError(f"Undefined variable '{var_name}'", line=ctx.start.line, context_text=var_name, suggestion=suggestion)
+
+
+    def visitIfStat(self, ctx: PySQLParser.IfStatContext):
         condition = self.visit(ctx.expr())
         if not isinstance(condition, bool):
             line = ctx.expr().start.line
-            raise Exception(f"Condition must be a boolean, got {type(condition)} at line {line}")
+            raise PySQLTypeError(f"If condition must be a boolean, got {type(condition).__name__}", line=line)
+
+        # Wybieramy, który blok kodu (stat) chcemy wykonać
+        target_stat = None
         if condition:
-            return self.visit(ctx.stat(0))
-        elif ctx.stat(1):
-            return self.visit(ctx.stat(1))
+            if ctx.stat(0):
+                target_stat = ctx.stat(0)
+        else:  # else
+            if ctx.stat(1):
+                target_stat = ctx.stat(1)
+
+        # Jeśli jest jakikolwiek blok do wykonania, tworzymy dla niego
+        # nowy, chroniony zakres i wykonujemy go wewnątrz.
+        if target_stat:
+            self.scopes.append({})
+            self.var_types.append({})
+            try:
+                self.visit(target_stat)
+            finally:
+                # TO WYKONA SIĘ ZAWSZE: po normalnym zakończeniu LUB po rzuceniu wyjątku `return`
+                self.scopes.pop()
+                self.var_types.pop()
+        
+        # Instrukcja `if` sama w sobie nie zwraca wartości
         return None
 
     def visitBreakStat(self, ctx):
@@ -1006,17 +1081,33 @@ class PySQLInterpreter(PySQLVisitor):
                 raise Exception(f"'while' condition must be boolean at line {ctx.start.line}")
             if not condition:
                 break
+            # Dodanie nowego scope'a dla każdej iteracji pętli
+            self.scopes.append({})
+            self.var_types.append({})
+
             try:
                 self.visit(ctx.block())
             except BreakException:
+                self.scopes.pop()  # Usunięcie zakresu przed przerwaniem pętli
+                self.var_types.pop()
                 break
             except ContinueException:
+                self.scopes.pop()  # Usunięcie zakresu przed kontynuowaniem pętli
+                self.var_types.pop()
                 continue
+            # Usunięcie zakresu po zakończeniu iteracji
+            self.scopes.pop()
+            self.var_types.pop()
 
     def visitForLoop(self, ctx):
         """
         NOWA, elastyczna implementacja pętli 'for' pasująca do nowej gramatyki.
         """
+
+        # Dodanie nowego scope'a dla pętli
+        self.scopes.append({})
+        self.var_types.append({})
+
         if ctx.forInitializer():
             self.visit(ctx.forInitializer())
 
@@ -1030,6 +1121,7 @@ class PySQLInterpreter(PySQLVisitor):
             
             if not condition:
                 break
+
             try:
                 self.visit(ctx.block())
             except BreakException:
@@ -1041,10 +1133,21 @@ class PySQLInterpreter(PySQLVisitor):
 
             if ctx.forUpdate():
                 self.visit(ctx.forUpdate())
+
+        # Usunięcie zakresu po zakończeniu pętli
+        self.scopes.pop()
+        self.var_types.pop()
+
     
     def visitBlock(self, ctx):
+        # Dodanie nowego scope'a dla bloku kodu
+        self.scopes.append({})
+        self.var_types.append({})
         for stmt in ctx.stat():
             self.visit(stmt)
+        # Usunięcie zakresu po zakończeniu bloku
+        self.scopes.pop()
+        self.var_types.pop()
 
     
 class BreakException(Exception): pass
