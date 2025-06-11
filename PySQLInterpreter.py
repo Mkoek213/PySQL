@@ -988,42 +988,46 @@ class PySQLInterpreter(PySQLVisitor):
         for child in ctx.stat():
             self.visit(child)
 
-    # NOWOŚĆ: Scentralizowana metoda do wyszukiwania zmiennych
     def visitIdentifierName(self, ctx: PySQLParser.IdentifierNameContext):
         var_name = ctx.ID().getText() 
         levels = len(ctx.parentAccess())
 
         if levels > 0:
-            # ## TUTAJ ZNAJDUJE SIĘ NOWA, INTELIGENTNA LOGIKA ##
+            # Sprawdź, czy BIEŻĄCY zakres jest zakresem funkcyjnym.
+            is_current_scope_function = self.scopes[-1].get('__is_function_scope', False)
             
-            # Sprawdzamy, czy znajdujemy się wewnątrz jakiejkolwiek funkcji na stosie
-            is_inside_function = any(
-                scope.get('__is_function_scope', False) for scope in self.scopes
-            )
-
-            target_scope = None
-            if is_inside_function:
-                # Jeśli jesteśmy w funkcji, `parent::` odnosi się do zakresu GLOBALNEGO.
-                # To uproszczenie, które rozwiązuje Twój problem z leksykalnym rodzicem.
+            if is_current_scope_function:
+                # --- LOGIKA DLA FUNKCJI ---
+                # Wewnątrz funkcji, `parent::` odnosi się do leksykalnego rodzica,
+                # którym w tym języku jest zawsze zakres globalny (scopes[0]).
+                # Każdy dodatkowy `parent::` to błąd, bo nie ma "dziadka" nad zakresem globalnym.
                 if levels > 1:
-                    raise PySQLNameError("Nested parent access (parent::parent::) inside functions is not supported.", line=ctx.start.line)
-                target_scope = self.scopes[0] # Zakres globalny
-            else:
-                # Jeśli nie jesteśmy w funkcji (np. w zagnieżdżonych pętlach w zakresie globalnym), 
-                # używamy starej, prostej logiki dynamicznego rodzica.
-                scope_index = -1 - levels
-                if abs(scope_index) > len(self.scopes):
-                    raise PySQLNameError("Parent scope access out of bounds", line=ctx.start.line)
-                target_scope = self.scopes[scope_index]
+                    raise PySQLNameError(f"Cannot use nested 'parent::' ({levels} levels) inside a function.", line=ctx.start.line)
 
-            # Wspólna logika sprawdzania, czy zmienna istnieje w docelowym zakresie
-            if var_name not in target_scope:
-                suggestion = get_closest_match(var_name, target_scope.keys())
-                raise PySQLNameError(f"Undefined variable '{var_name}' in specified parent scope", line=ctx.start.line, suggestion=suggestion)
-            
-            return target_scope[var_name]
+                global_scope = self.scopes[0]
+                if var_name in global_scope:
+                    return global_scope[var_name]
+                else:
+                    suggestion = get_closest_match(var_name, global_scope.keys())
+                    raise PySQLNameError(f"Undefined variable '{var_name}' in global scope (accessed via parent::)", line=ctx.start.line, suggestion=suggestion)
+            else:
+                # --- LOGIKA DLA ZWYKŁYCH BLOKÓW (`{...}`) ---
+                # Wewnątrz bloku, `parent::` rozpoczyna wyszukiwanie od zakresu nadrzędnego
+                # i kontynuuje w górę aż do zakresu globalnego.
+                start_index = -1 - levels
+                if abs(start_index) > len(self.scopes):
+                    raise PySQLNameError(f"Parent scope access out of bounds for {'parent::'*levels}x", line=ctx.start.line)
+                
+                positive_start_index = len(self.scopes) + start_index
+                for i in range(positive_start_index, -1, -1):
+                    scope = self.scopes[i]
+                    if var_name in scope:
+                        return scope[var_name]
+                
+                # Jeśli zmiennej nie znaleziono w żadnym z nadrzędnych zakresów.
+                raise PySQLNameError(f"Undefined variable '{var_name}' in any parent scope", line=ctx.start.line)
         else:
-            # Standardowe wyszukiwanie (bez `parent::`) pozostaje bez zmian
+            # Standardowe wyszukiwanie (bez `parent::`) od bieżącego zakresu w górę.
             scope = self._find_variable_scope(var_name)
             if scope is not None:
                 return scope[var_name]
