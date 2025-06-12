@@ -1,0 +1,54 @@
+
+/\y = 10
+{
+    print("abc")
+    {
+        print(parent::y)
+    }
+}
+/\
+
+func foo(x: int) -> void exec (
+    print(x)
+)
+
+int i = 1
+for (foo(5); i < 5; i = i+1) do{
+    print(" ")
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/\int x = 10
+
+func foo(x: int, y:int, z:int) ->int exec( //dodac w krotej kolumnie jest blad
+    
+    if (x > 0) then //nie obslugujemy blokow po then, do poprawy
+        print("abc")
+    else 
+        print(parent::x)    
+    return 0
+)
+foo(0, 100, 5) //zmienna deklarowana przy definicji funkcji, czyli powinna byc redeklaracja x z linii 2 w linii
+
+/\

@@ -71,7 +71,7 @@ loopStat
     | 'while' '(' expr ')' 'do' block                                # WhileLoop
     ;
 
-forInitializer: (varDecl | expr)? ; // Inicjalizator jest opcjonalny i może być deklaracją LUB wyrażeniem
+forInitializer: (varDecl | expr | printStat)? ; // Inicjalizator jest opcjonalny i może być deklaracją LUB wyrażeniem
 forUpdate     : expr? ;             // Część aktualizująca jest opcjonalna i jest wyrażeniem
 
 block: '{' stat* '}' ;
