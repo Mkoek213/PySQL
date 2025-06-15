@@ -532,8 +532,19 @@ def visitSelectiveImport(self, ctx: PySQLParser.SelectiveImportContext):
 ```
 
 
+### 5. Diagramy:
 
-### 5. Podsumowanie
+#### 5.1 Diagram Klas
+![Diagram klas](diagramy/Diagram_klas.drawio.pdf)
+
+#### 5.2 Diagram Przebiegu
+![Diagram przebiegu](diagramy/Diagram_przebiegu.drawio.pdf)
+
+#### 5.3 Diagram Zarządzania Stosem Zakresów
+![Diagram zarządzania zakresem](diagramy/Diagram_zarzadzania_stosem.drawio.pdf)
+
+
+### 6. Podsumowanie
 
 Przedstawiony interpreter języka PySQL to kompletny projekt, który skutecznie łączy paradygmaty imperatywne i deklaratywne. Jego architektura, oparta na jednoprzebiegowym wzorcu Visitor, jest zarówno elegancka, jak i wydajna.
 
