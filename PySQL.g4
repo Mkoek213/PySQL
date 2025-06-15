@@ -21,8 +21,7 @@ stat:   varDecl
 parentAccess: 'parent' '::' ;
 identifierName: parentAccess* (ID | INVALID_NUMBER) ;
 varDecl: varType identifierName ('=' expr)? ;
-assign: (identifierName | arrayIndex) '=' expr ;
-arrayIndex: identifierName '[' expr ']' ;
+assign: (identifierName | postfixExpr) '=' expr ;
 
 expr:   selectExpr
     |   assign
@@ -43,11 +42,12 @@ factor:
     | BOOL
     | arrayLiteral
     | identifierName '(' exprList? ')'
-    | identifierName
+    | postfixExpr
     | 'not' factor
     | '(' expr ')'
-    | identifierName '[' expr ']'
     ;
+
+postfixExpr: identifierName ('[' expr ']')* ;
 
 exprList: expr (',' expr)* ;
 
