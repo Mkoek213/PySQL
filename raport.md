@@ -535,7 +535,7 @@ def visitSelectiveImport(self, ctx: PySQLParser.SelectiveImportContext):
 ### 5. Diagramy:
 
 #### 5.1 Diagram Klas
-![Diagram klas](diagramy/Diagram_klas.drawio.png)
+![Diagram klas](diagramy/Diagramy_klas.drawio.png)
 
 #### 5.2 Diagram Przebiegu
 ![Diagram przebiegu](diagramy/Diagram_przebiegu.drawio.png)
