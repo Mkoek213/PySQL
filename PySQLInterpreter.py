@@ -358,13 +358,46 @@ class PySQLInterpreter(PySQLVisitor):
     def visitAssign(self, ctx: PySQLParser.AssignContext):
         value = self.visit(ctx.expr())
 
-        if ctx.arrayIndex():
-            # Obsługa przypisania do indeksu w tablicy
-            arr, index = self.visit(ctx.arrayIndex())
-
-            # Sprawdzenie typów
-            if isinstance(arr, list) and arr:
-                elem_type = self.infer_type(arr[0])
+        if ctx.postfixExpr():
+            # Obsługa przypisania do indeksu w tablicy (może być wielopoziomowy)
+            result = self.visit(ctx.postfixExpr())
+            
+            # Check if it's a simple identifier (no indexing)
+            if not isinstance(result, tuple):
+                # Simple identifier assignment - shouldn't happen with postfixExpr that has indices
+                # But handle it just in case
+                raise PySQLRuntimeError("Invalid assignment target", line=ctx.start.line)
+            
+            arr, indices = result
+            
+            # Navigate to the target array/element for assignment
+            current = arr
+            for i, index in enumerate(indices[:-1]):  # All but the last index
+                if not isinstance(current, list):
+                    raise PySQLTypeError(
+                        f"Cannot index non-array type",
+                        line=ctx.start.line
+                    )
+                try:
+                    current = current[index]
+                except IndexError:
+                    raise PySQLValueError(
+                        f"Array index out of bounds: {index}",
+                        line=ctx.start.line,
+                        context_text=str(index)
+                    )
+            
+            # Final assignment
+            final_index = indices[-1]
+            if not isinstance(current, list):
+                raise PySQLTypeError(
+                    f"Cannot index non-array type",
+                    line=ctx.start.line
+                )
+            
+            # Type checking
+            if isinstance(current, list) and current:
+                elem_type = self.infer_type(current[0])
                 value_type = self.infer_type(value)
 
                 if elem_type == 'float' and value_type == 'int':
@@ -372,8 +405,15 @@ class PySQLInterpreter(PySQLVisitor):
                 elif not self.type_matches(elem_type, value_type):
                     raise PySQLTypeError(f"Type mismatch: array contains {elem_type}, assigned value is {value_type}", line=ctx.start.line)
 
-            arr[index] = value
-            return value
+            try:
+                current[final_index] = value
+                return value
+            except IndexError:
+                raise PySQLValueError(
+                    f"Array index out of bounds: {final_index}",
+                    line=ctx.start.line,
+                    context_text=str(final_index)
+                )
         else:
             # Przypisanie do zmiennej
             # NAJPIERW pobieramy kontekst nazwy zmiennej
@@ -473,27 +513,29 @@ class PySQLInterpreter(PySQLVisitor):
         elements = [self.visit(expr) for expr in ctx.expr()] if ctx.expr() else []
         return elements
     
-    # ZMIANA: Użycie visitIdentifierName do znalezienia tablicy
-    def visitArrayIndex(self, ctx: PySQLParser.ArrayIndexContext):
-        index_expr = ctx.expr()
-        index_val = self.visit(index_expr)
-
-        # Używamy visitIdentifierName, aby poprawnie znaleźć tablicę w odpowiednim zakresie
-        arr = self.visit(ctx.identifierName())
-        array_name = ctx.identifierName().getText()
-
-        if not isinstance(arr, list):
-            raise PySQLTypeError(f"Variable '{array_name}' is not an array", line=ctx.start.line)
-
-        if not isinstance(index_val, int):
-            raise PySQLTypeError("Array index must be an integer", line=index_expr.start.line)
-
-        if not 0 <= index_val < len(arr):
-            raise PySQLValueError(f"Array index out of bounds: {index_val}", line=index_expr.start.line)
+    def visitPostfixExpr(self, ctx: PySQLParser.PostfixExprContext):
+        # Start with the base identifier
+        result = self.visit(ctx.identifierName())
+        indices = []
         
-        # Zwracamy tablicę i indeks, co jest przydatne dla visitAssign
-        return arr, index_val
-
+        # Collect all the indices
+        for i in range(len(ctx.expr())):
+            index_val = self.visit(ctx.expr(i))
+            if not isinstance(index_val, int):
+                raise PySQLTypeError(
+                    "Array index must be an integer",
+                    line=ctx.expr(i).start.line,
+                    context_text=str(index_val)  
+                )
+            indices.append(index_val)
+        
+        # If no indices, just return the identifier (like identifierName)
+        if not indices:
+            return result
+            
+        # Return tuple (array, indices) for both assignment and reading contexts
+        return (result, indices)
+    
     
     def visitLogicalExpr(self, ctx):
         left = self.visit(ctx.comparisonExpr(0))
@@ -641,7 +683,7 @@ class PySQLInterpreter(PySQLVisitor):
             except IndexError:
                 raise PySQLValueError(
                     f"Array index out of bounds: {index_val}",
-                    line=index_expr_ctx.start.line,
+                    line=ctx.start.line,
                     context_text=str(index_val))
     
         if ctx.getChildCount() == 4 and \
@@ -655,18 +697,52 @@ class PySQLInterpreter(PySQLVisitor):
                 if isinstance(value_to_cast, float): return int(value_to_cast)
                 if isinstance(value_to_cast, bool): return 1 if value_to_cast else 0
                 if isinstance(value_to_cast, int): return value_to_cast
+                if isinstance(value_to_cast, str):
+                    try:
+                        # Handle different string representations
+                        value_str = value_to_cast.strip()
+                        if value_str.lower() == 'true':
+                            return 1
+                        elif value_str.lower() == 'false':
+                            return 0
+                        else:
+                            return int(value_str)
+                    except ValueError:
+                        raise PySQLValueError(f"Cannot convert string '{value_to_cast}' to int", line=ctx.start.line)
                 raise Exception(f"Cannot cast type {self.infer_type(value_to_cast)} to 'int' at line {ctx.start.line}")
             
             elif target_type_str == 'float':
                 if isinstance(value_to_cast, int): return float(value_to_cast)
                 if isinstance(value_to_cast, bool): return 1.0 if value_to_cast else 0.0
                 if isinstance(value_to_cast, float): return value_to_cast
+                if isinstance(value_to_cast, str):
+                    try:
+                        # Handle different string representations
+                        value_str = value_to_cast.strip()
+                        if value_str.lower() == 'true':
+                            return 1.0
+                        elif value_str.lower() == 'false':
+                            return 0.0
+                        else:
+                            return float(value_str)
+                    except ValueError:
+                        raise PySQLValueError(f"Cannot convert string '{value_to_cast}' to float", line=ctx.start.line)
                 raise Exception(f"Cannot cast type {self.infer_type(value_to_cast)} to 'float' at line {ctx.start.line}")
 
             elif target_type_str == 'bool':
                 if isinstance(value_to_cast, int): return value_to_cast != 0
                 if isinstance(value_to_cast, float): return value_to_cast != 0.0
                 if isinstance(value_to_cast, bool): return value_to_cast
+                if isinstance(value_to_cast, str):
+                    # Handle different string representations for boolean conversion
+                    value_str = value_to_cast.strip().lower()
+                    if value_str in ('true', '1', 'yes', 'on'):
+                        return True
+                    elif value_str in ('false', '0', 'no', 'off', ''):
+                        return False
+                    else:
+                        # Non-empty strings are truthy, empty strings are falsy
+                        return len(value_to_cast.strip()) > 0
                 raise Exception(f"Cannot cast type {self.infer_type(value_to_cast)} to 'bool' at line {ctx.start.line}")
             elif target_type_str == 'string':
                 if value_to_cast is None:
@@ -790,9 +866,30 @@ class PySQLInterpreter(PySQLVisitor):
         elif ctx.arrayLiteral():
             return self.visit(ctx.arrayLiteral())
             
-        elif ctx.arrayIndex():
-            arr, index = self.visit(ctx.arrayIndex())
-            return arr[index]
+        elif ctx.postfixExpr():
+            result = self.visit(ctx.postfixExpr())
+            if isinstance(result, tuple):
+                # This is array indexing
+                arr, indices = result
+                current = arr
+                for index in indices:
+                    if not isinstance(current, list):
+                        raise PySQLTypeError(
+                            f"Cannot index non-array type",
+                            line=ctx.start.line
+                        )
+                    try:
+                        current = current[index]
+                    except IndexError:
+                        raise PySQLValueError(
+                            f"Array index out of bounds: {index}",
+                            line=ctx.start.line,
+                            context_text=str(index)
+                        )
+                return current
+            else:
+                # Simple identifier
+                return result
 
         elif ctx.selectExpr():
             return self.visit(ctx.selectExpr())
